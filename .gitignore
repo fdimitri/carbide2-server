@@ -1,0 +1,7 @@
+.env
+tmp/*
+log/*
+.github
+*.lock
+db/*sqlite3
+

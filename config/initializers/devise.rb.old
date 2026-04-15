@@ -1,0 +1,6 @@
+# Minimal Devise initializer placeholder. Configure fully in a real app.
+require "devise"
+Devise.setup do |config|
+  config.mailer_sender = 'please-change-me@example.com'
+  config.secret_key = ENV['DEVISE_SECRET_KEY'] if ENV['DEVISE_SECRET_KEY']
+end
