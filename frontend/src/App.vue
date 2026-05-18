@@ -7,7 +7,7 @@
         <button class="btn-logout" @click="logout">Logout</button>
       </div>
     </nav>
-    <main class="main">
+    <main class="main" :class="{ 'main--workspace': $route.path.startsWith('/projects/') }">
       <router-view />
     </main>
   </div>
@@ -89,5 +89,11 @@ import { useRouter } from 'vue-router'
 .main {
   flex: 1;
   padding: 2rem;
+}
+
+.main--workspace {
+  padding: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 </style>

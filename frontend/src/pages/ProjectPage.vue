@@ -21,23 +21,29 @@
         <div class="tree-group" v-if="showFilesGroup">
           <div class="tree-group-header">Files</div>
           <div class="tree-file-list">
-            <button
-              v-for="row in filteredFileTreeRows"
-              :key="row.node.id"
-              class="tree-node tree-node-file"
-              :class="{
-                active: activePane === 'file' && selectedFileId === row.node.id,
-                'tree-node-dir': row.node.type === 'dir'
-              }"
-              @click="handleFileTreeRowClick(row)">
-              <span class="tree-node-indent" :style="{ width: `${row.depth * 14}px` }"></span>
-              <span class="tree-twistie" v-if="row.node.type === 'dir'">{{ row.isExpanded ? '▾' : '▸' }}</span>
-              <span class="tree-twistie" v-else></span>
-              <span class="tree-icon">{{ row.node.type === 'dir' ? '[D]' : '[F]' }}</span>
-              <span class="tree-label">{{ row.node.name }}</span>
-            </button>
+            <Tree
+              class="explorer-file-tree"
+              :value="primeFileNodes"
+              v-model:expandedKeys="expandedFileKeys"
+              v-model:selectionKeys="fileSelectionKeys"
+              selectionMode="single"
+              :filter="true"
+              filterMode="lenient"
+              :filterValue="explorerSearch"
+              @node-select="onFileNodeSelect"
+            >
+              <template #default="slotProps">
+                <div class="prime-tree-node-label">
+                  <i
+                    class="pi"
+                    :class="slotProps.node.data.type === 'dir' ? 'pi-folder' : 'pi-file'"
+                    aria-hidden="true"
+                  ></i>
+                  <span>{{ slotProps.node.label }}</span>
+                </div>
+              </template>
+            </Tree>
           </div>
-          <div v-if="filteredFileTreeRows.length === 0" class="tree-empty">No files in filter</div>
         </div>
 
         <div class="tree-group" v-if="showTerminalsGroup">
@@ -131,6 +137,7 @@ import { useRoute } from 'vue-router'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
+import Tree from 'primevue/tree'
 import workerSocket from '../services/workerSocket'
 import { listProjects, getWsToken, listChatChannels, createChatChannel, listChatMessages, createChatMessage } from '../services/projectService'
 import authService from '../services/authService'
@@ -224,7 +231,16 @@ const fileTree = ref([
   { id: 'README.md', name: 'README.md', type: 'file' },
   { id: 'UX_NOTES.md', name: 'UX_NOTES.md', type: 'file' }
 ])
-const expandedDirs = ref(new Set(['app', 'app/controllers', 'frontend', 'frontend/src', 'worker']))
+const expandedFileKeys = ref({
+  app: true,
+  'app/controllers': true,
+  frontend: true,
+  'frontend/src': true,
+  worker: true,
+})
+const fileSelectionKeys = ref({
+  [selectedFileId.value]: true,
+})
 
 // Terminal
 const terminalEl       = ref(null)
@@ -258,30 +274,19 @@ const showFilesGroup = computed(() => explorerFilter.value === 'all' || explorer
 const showTerminalsGroup = computed(() => explorerFilter.value === 'all' || explorerFilter.value === 'terminals')
 const showChannelsGroup = computed(() => explorerFilter.value === 'all' || explorerFilter.value === 'channels')
 
-const filteredFileTreeRows = computed(() => {
-  const query = explorerSearch.value.trim().toLowerCase()
+const primeFileNodes = computed(() => {
+  const mapNode = (node) => ({
+    key: node.id,
+    label: node.name,
+    selectable: node.type === 'file',
+    data: {
+      type: node.type,
+      id: node.id,
+    },
+    children: node.children?.map(mapNode) || [],
+  })
 
-  const subtreeMatches = (node) => {
-    const direct = node.name.toLowerCase().includes(query)
-    if (direct) return true
-    if (node.type !== 'dir' || !node.children?.length) return false
-    return node.children.some(subtreeMatches)
-  }
-
-  const rows = []
-  const visit = (nodes, depth) => {
-    nodes.forEach((node) => {
-      if (query && !subtreeMatches(node)) return
-      const isExpanded = node.type === 'dir' && (query ? true : expandedDirs.value.has(node.id))
-      rows.push({ node, depth, isExpanded })
-      if (node.type === 'dir' && isExpanded && node.children?.length) {
-        visit(node.children, depth + 1)
-      }
-    })
-  }
-
-  visit(fileTree.value, 0)
-  return rows
+  return fileTree.value.map(mapNode)
 })
 
 const filteredTerminalNodes = computed(() => {
@@ -311,21 +316,10 @@ function isJoinedChannel(channelId) {
   return joinedChatChannels.value.has(Number(channelId))
 }
 
-function toggleDirectory(path) {
-  if (expandedDirs.value.has(path)) {
-    expandedDirs.value.delete(path)
-  } else {
-    expandedDirs.value.add(path)
-  }
-  expandedDirs.value = new Set(expandedDirs.value)
-}
-
-function handleFileTreeRowClick(row) {
-  if (row.node.type === 'dir') {
-    toggleDirectory(row.node.id)
-    return
-  }
-  selectFileNode(row.node.id)
+function onFileNodeSelect(event) {
+  const node = event?.node
+  if (!node || node.data?.type !== 'file') return
+  selectFileNode(node.key)
 }
 
 function startJoinWait(channelId) {
@@ -609,6 +603,7 @@ async function selectChannelNode(channelId) {
 
 function selectFileNode(fileId) {
   selectedFileId.value = fileId
+  fileSelectionKeys.value = { [fileId]: true }
   activePane.value = 'file'
 }
 
@@ -668,7 +663,9 @@ function formatTime(ts) {
   --warn: #f07167;
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
   color: var(--text);
   background:
     radial-gradient(circle at 0% 0%, rgba(46, 196, 182, 0.08) 0, transparent 30%),
@@ -697,6 +694,8 @@ function formatTime(ts) {
   grid-template-columns: 300px minmax(0, 1fr);
   flex: 1;
   min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
 }
 
 .explorer {
@@ -705,6 +704,7 @@ function formatTime(ts) {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
 }
 
 .explorer-header {
@@ -747,8 +747,53 @@ function formatTime(ts) {
 }
 
 .tree-file-list {
-  max-height: 280px;
+  max-height: min(44vh, 380px);
   overflow-y: auto;
+}
+
+.explorer-file-tree {
+  background: transparent;
+  border: 0;
+  color: var(--text);
+}
+
+.prime-tree-node-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+:deep(.explorer-file-tree .p-tree-root) {
+  padding: 0.2rem;
+}
+
+:deep(.explorer-file-tree .p-tree-node-content) {
+  border-radius: 0.3rem;
+  padding: 0.25rem 0.35rem;
+  color: var(--text);
+}
+
+:deep(.explorer-file-tree .p-tree-node-content:hover) {
+  background: rgba(74, 110, 157, 0.35);
+}
+
+:deep(.explorer-file-tree .p-tree-node-toggle-button) {
+  width: 1rem;
+  height: 1rem;
+  color: #9cb1cf;
+}
+
+:deep(.explorer-file-tree .p-tree-node-selectable.p-tree-node-selected > .p-tree-node-content),
+:deep(.explorer-file-tree .p-tree-node-content.p-tree-node-selectable.p-tree-node-selected) {
+  background: rgba(46, 196, 182, 0.17);
+  box-shadow: inset 2px 0 0 var(--accent);
+  color: #d7fff6;
+}
+
+:deep(.explorer-file-tree .pi-folder),
+:deep(.explorer-file-tree .pi-file) {
+  color: #86d7ff;
+  font-size: 0.82rem;
 }
 
 .tree-group-header {
@@ -838,6 +883,7 @@ function formatTime(ts) {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  max-height: 100%;
 }
 
 .panel-header {
@@ -983,6 +1029,7 @@ function formatTime(ts) {
   .workspace-body {
     grid-template-columns: 1fr;
     grid-template-rows: 42vh minmax(0, 1fr);
+    max-height: 100%;
   }
 
   .explorer {
