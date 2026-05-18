@@ -2,6 +2,10 @@ Rails.application.routes.draw do
   devise_for :users
 
   namespace :api, defaults: { format: :json } do
+    # Authentication endpoints
+    post '/login', to: 'auth#login'
+    post '/signup', to: 'auth#signup'
+
     resources :projects, only: [] do
       resources :terminals, only: [:create], controller: 'terminals'
     end

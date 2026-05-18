@@ -25,7 +25,7 @@ const authService = {
 
   async login(email, password) {
     try {
-      const response = await api.post('/users/sign_in', {
+      const response = await api.post('/login', {
         user: { email, password },
       })
 
