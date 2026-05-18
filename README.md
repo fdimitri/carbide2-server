@@ -100,7 +100,11 @@ Key vars:
 - `POST /users` — Sign up
 
 ### Terminals
-- `POST /api/projects/:project_id/terminals` — Create terminal session, returns JWT token
+- Terminal lifecycle is WebSocket-managed in `worker/worker.rb` (ephemeral, in-memory)
+
+### Chat
+- `GET /api/projects/:project_id/chat_messages` — Load persisted chat history (last 200)
+- `POST /api/projects/:project_id/chat_messages` — Persist a chat message
 
 ### Projects
 - `GET /api/projects` — List projects (TODO)

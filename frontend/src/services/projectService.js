@@ -24,3 +24,34 @@ export async function getWsToken(projectId) {
   const res = await axios.post(`${API}/api/projects/${projectId}/ws_token`, {}, { headers: authHeaders() })
   return res.data.token
 }
+
+export async function listChatChannels(projectId) {
+  const res = await axios.get(`${API}/api/projects/${projectId}/chat_channels`, { headers: authHeaders() })
+  return res.data || []
+}
+
+export async function createChatChannel(projectId, name) {
+  const res = await axios.post(
+    `${API}/api/projects/${projectId}/chat_channels`,
+    { chat_channel: { name } },
+    { headers: authHeaders() }
+  )
+  return res.data
+}
+
+export async function listChatMessages(projectId, channelId) {
+  const res = await axios.get(
+    `${API}/api/projects/${projectId}/chat_channels/${channelId}/chat_messages`,
+    { headers: authHeaders() }
+  )
+  return res.data || []
+}
+
+export async function createChatMessage(projectId, channelId, text) {
+  const res = await axios.post(
+    `${API}/api/projects/${projectId}/chat_channels/${channelId}/chat_messages`,
+    { chat_message: { text } },
+    { headers: authHeaders() }
+  )
+  return res.data
+}

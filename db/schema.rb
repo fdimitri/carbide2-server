@@ -10,7 +10,27 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_18_000000) do
+ActiveRecord::Schema[8.1].define(version: 2026_05_18_003000) do
+  create_table "chat_channels", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.string "name", null: false
+    t.integer "project_id", null: false
+    t.datetime "updated_at", null: false
+    t.index ["project_id", "name"], name: "index_chat_channels_on_project_id_and_name", unique: true
+    t.index ["project_id"], name: "index_chat_channels_on_project_id"
+  end
+
+  create_table "chat_messages", force: :cascade do |t|
+    t.integer "chat_channel_id", null: false
+    t.datetime "created_at", null: false
+    t.string "name", null: false
+    t.text "text", null: false
+    t.datetime "updated_at", null: false
+    t.integer "user_id"
+    t.index ["chat_channel_id"], name: "index_chat_messages_on_chat_channel_id"
+    t.index ["user_id"], name: "index_chat_messages_on_user_id"
+  end
+
   create_table "projects", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.text "description"
@@ -19,19 +39,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_18_000000) do
     t.datetime "updated_at", null: false
     t.integer "user_id"
     t.index ["user_id"], name: "index_projects_on_user_id"
-  end
-
-  create_table "terminal_sessions", force: :cascade do |t|
-    t.integer "cols", default: 80
-    t.datetime "created_at", null: false
-    t.integer "owner_id"
-    t.integer "project_id"
-    t.string "pty_cmd"
-    t.integer "rows", default: 24
-    t.string "status"
-    t.datetime "updated_at", null: false
-    t.index ["owner_id"], name: "index_terminal_sessions_on_owner_id"
-    t.index ["project_id"], name: "index_terminal_sessions_on_project_id"
   end
 
   create_table "users", force: :cascade do |t|
@@ -52,6 +59,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_18_000000) do
     t.index ["reset_password_token"], name: "index_users_on_reset_password_token", unique: true
   end
 
-  add_foreign_key "terminal_sessions", "projects"
-  add_foreign_key "terminal_sessions", "users", column: "owner_id"
+  add_foreign_key "chat_channels", "projects"
+  add_foreign_key "chat_messages", "chat_channels"
+  add_foreign_key "chat_messages", "users"
 end

@@ -4,5 +4,5 @@ class User < ActiveRecord::Base
     :recoverable, :rememberable, :validatable, :trackable
 
   has_many :projects, dependent: :destroy
-  has_many :terminal_sessions, foreign_key: :owner_id, dependent: :destroy
+  has_many :chat_messages, dependent: :nullify
 end

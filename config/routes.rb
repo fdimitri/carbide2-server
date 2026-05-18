@@ -8,8 +8,8 @@ Rails.application.routes.draw do
 
     resources :projects do
       member { post :ws_token }
-      resources :terminals, only: [:index, :create], controller: 'terminals' do
-        member { get :token }
+      resources :chat_channels, only: [:index, :create], controller: 'chat_channels' do
+        resources :chat_messages, only: [:index, :create], controller: 'chat_messages'
       end
     end
   end
