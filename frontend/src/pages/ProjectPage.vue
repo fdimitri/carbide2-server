@@ -9,15 +9,35 @@
     <div class="workspace-body">
       <!-- Terminal panel -->
       <section class="panel terminal-panel">
-        <div class="panel-header">
-          <span>Terminal</span>
-          <button class="btn-small" @click="openTerminal" :disabled="terminalLoading">
-            {{ terminalLoading ? 'Opening...' : terminalActive ? 'New Terminal' : 'Open Terminal' }}
+        <!-- Terminal selector -->
+        <div class="terminal-list-header">
+          <div class="terminal-list-title">Terminals</div>
+          <button class="btn-small" @click="refreshTerminalList" title="Refresh terminal list">↻</button>
+        </div>
+        <div class="terminal-list">
+          <button class="terminal-item" @click="openTerminal" :disabled="terminalLoading">
+            <span class="terminal-icon">+</span>
+            <span>New Terminal</span>
           </button>
+          <button v-for="t in terminalList" :key="t.id" 
+                  class="terminal-item" 
+                  :class="{ active: terminalActive && selectedTerminalId === t.id }"
+                  @click="() => { selectedTerminalId = t.id; switchTerminal() }">
+            <span class="terminal-icon">#</span>
+            <span>{{ t.id }} ({{ t.status }})</span>
+          </button>
+          <div v-if="terminalList.length === 0" class="terminal-item-empty">
+            No existing terminals
+          </div>
+        </div>
+
+        <!-- Terminal output -->
+        <div class="panel-header">
+          <span>Output</span>
         </div>
         <div ref="terminalEl" class="xterm-container" @click="xterm?.focus()"></div>
         <div v-if="!terminalActive" class="panel-placeholder">
-          Click "Open Terminal" to start a shell session.
+          Click "New Terminal" or select one from the list to start.
         </div>
       </section>
 
@@ -64,7 +84,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import workerSocket from '../services/workerSocket'
-import { listProjects, getWsToken, createTerminal } from '../services/projectService'
+import { listProjects, getWsToken } from '../services/projectService'
 import authService from '../services/authService'
 
 const route        = useRoute()
@@ -74,9 +94,11 @@ const error        = ref('')
 const wsConnected  = ref(false)
 
 // Terminal
-const terminalEl      = ref(null)
-const terminalActive  = ref(false)
-const terminalLoading = ref(false)
+const terminalEl       = ref(null)
+const terminalActive   = ref(false)
+const terminalLoading  = ref(false)
+const terminalList     = ref([])
+const selectedTerminalId = ref(null)
 let xterm    = null
 let fitAddon = null
 let terminalId = null
@@ -102,6 +124,19 @@ onMounted(async () => {
       workerSocket.on('system', 'connected', () => {
         wsConnected.value = true
         workerSocket.send('chat', 'join', {})
+      })
+    )
+
+    // Terminal list handler
+    offHandlers.push(
+      workerSocket.on('term', 'list', (p) => {
+        terminalList.value = p.terminals || []
+      }),
+      workerSocket.on('term', 'created', (p) => {
+        // Terminal was created, list will be broadcasted
+        const terminalId = p.terminal_id
+        selectedTerminalId.value = terminalId
+        connectToTerminal(terminalId)
       })
     )
 
@@ -171,9 +206,19 @@ onBeforeUnmount(() => {
 async function openTerminal() {
   terminalLoading.value = true
   try {
-    const resp = await createTerminal(projectId)
-    terminalId = resp.terminal_id
+    // Send create message via WebSocket
+    workerSocket.send('term', 'create', {})
+    // Loading state will be managed by connectToTerminal when 'term created' is received
+  } catch (e) {
+    error.value = e.message || 'Failed to create terminal'
+    terminalLoading.value = false
+  }
+}
 
+async function connectToTerminal(tid) {
+  terminalLoading.value = true
+  try {
+    terminalId = tid
     await nextTick()
 
     if (!xterm) {
@@ -193,6 +238,9 @@ async function openTerminal() {
       })
 
       window.addEventListener('resize', () => fitAddon?.fit())
+    } else {
+      // Clear terminal when switching to new session
+      xterm.reset()
     }
 
     workerSocket.send('term', 'join', { terminal_id: terminalId })
@@ -201,11 +249,25 @@ async function openTerminal() {
     await nextTick()
     xterm.focus()
   } catch (e) {
-    error.value = e.message || 'Failed to open terminal'
+    error.value = e.message || 'Failed to connect to terminal'
   } finally {
     terminalLoading.value = false
   }
 }
+
+async function refreshTerminalList() {
+  try {
+    // Terminal list is broadcasted by worker, no need to manually refresh
+  } catch (e) {
+    console.error('Failed to refresh terminal list:', e)
+  }
+}
+
+async function switchTerminal() {
+  if (!selectedTerminalId.value) return
+  await connectToTerminal(selectedTerminalId.value)
+}
+
 
 function sendChat() {
   const text = chatInput.value.trim()
@@ -261,6 +323,83 @@ function formatTime(ts) {
 .terminal-panel {
   flex: 2;
   border-right: 2px solid #0f3460;
+  display: flex;
+  flex-direction: column;
+}
+
+.terminal-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0.75rem;
+  background: #0f1f35;
+  border-bottom: 1px solid #0f3460;
+  font-size: 0.8rem;
+  font-weight: bold;
+  color: #4fc3f7;
+}
+
+.terminal-list-title {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.terminal-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 150px;
+  overflow-y: auto;
+  background: #0a1520;
+  border-bottom: 1px solid #0f3460;
+}
+
+.terminal-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid #051120;
+  color: #999;
+  text-align: left;
+  cursor: pointer;
+  font-family: monospace;
+  font-size: 0.85rem;
+  transition: all 0.2s;
+}
+
+.terminal-item:hover {
+  background: #0f3460;
+  color: #4fc3f7;
+}
+
+.terminal-item.active {
+  background: #0f3460;
+  color: #4fc3f7;
+  font-weight: bold;
+}
+
+.terminal-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.terminal-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.2rem;
+  color: #4fc3f7;
+  font-weight: bold;
+}
+
+.terminal-item-empty {
+  padding: 0.5rem 0.75rem;
+  color: #555;
+  font-size: 0.8rem;
+  font-style: italic;
 }
 
 .chat-panel {

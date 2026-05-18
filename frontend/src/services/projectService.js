@@ -24,8 +24,3 @@ export async function getWsToken(projectId) {
   const res = await axios.post(`${API}/api/projects/${projectId}/ws_token`, {}, { headers: authHeaders() })
   return res.data.token
 }
-
-export async function createTerminal(projectId) {
-  const res = await axios.post(`${API}/api/projects/${projectId}/terminals`, {}, { headers: authHeaders() })
-  return res.data  // { terminal_id, token }
-}

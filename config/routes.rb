@@ -8,7 +8,9 @@ Rails.application.routes.draw do
 
     resources :projects do
       member { post :ws_token }
-      resources :terminals, only: [:create], controller: 'terminals'
+      resources :terminals, only: [:index, :create], controller: 'terminals' do
+        member { get :token }
+      end
     end
   end
 
