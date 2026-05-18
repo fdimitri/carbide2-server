@@ -13,7 +13,7 @@ A collaborative development environment with browser-based terminal emulation, b
 ## Prerequisites
 
 - **Ruby:** 3.4+ (uses RVM or rbenv)
-- **Node.js:** 16+ (for frontend)
+- **Node.js:** 16+ (for web client)
 - **SQLite3:** Usually included with system
 
 ## Quick Start
@@ -35,10 +35,13 @@ bundle exec rails server -p 3000
 - Email: `dev@example.com`
 - Password: `password`
 
-### 2. Frontend Setup
+### 2. Client Setup
 
 ```bash
-cd frontend
+# Initialize submodules after clone (run once)
+git submodule update --init --recursive
+
+cd clients/carbide2-client
 
 # Install dependencies
 npm install
@@ -74,7 +77,8 @@ carbide2-server/
 ├── db/
 │   ├── migrate/         # Schema migrations
 │   └── seeds.rb         # Demo user seed
-├── frontend/            # Vue 3 + Vite (see frontend/README.md)
+├── clients/
+│   └── carbide2-client/ # Vue 3 + Vite client (git submodule)
 ├── worker/              # EventMachine PTY server
 ├── Gemfile              # Ruby dependencies
 └── .env.example         # Environment template
@@ -158,7 +162,7 @@ docker run -p 3000:3000 carbide2
 
 - [ ] Set `Rails.env = 'production'`
 - [ ] Configure `SECRET_KEY_BASE`, `DATABASE_URL`
-- [ ] Build frontend: `cd frontend && npm run build`
+- [ ] Build client: `cd clients/carbide2-client && npm run build`
 - [ ] Serve static files from Rails or CDN
 - [ ] Use RS256 for JWT instead of HS256
 - [ ] Enable HTTPS
