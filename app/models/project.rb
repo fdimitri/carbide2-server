@@ -1,4 +1,6 @@
 class Project < ActiveRecord::Base
-  # Minimal Project model for pre-alpha
-  # fields: name:string, repo_url:string
+  belongs_to :user, optional: true
+  has_many :terminal_sessions, dependent: :destroy
+
+  validates :name, presence: true
 end

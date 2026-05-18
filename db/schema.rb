@@ -10,12 +10,15 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_04_14_001000) do
+ActiveRecord::Schema[8.1].define(version: 2026_05_18_000000) do
   create_table "projects", force: :cascade do |t|
     t.datetime "created_at", null: false
+    t.text "description"
     t.string "name"
     t.string "repo_url"
     t.datetime "updated_at", null: false
+    t.integer "user_id"
+    t.index ["user_id"], name: "index_projects_on_user_id"
   end
 
   create_table "terminal_sessions", force: :cascade do |t|

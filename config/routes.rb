@@ -3,10 +3,11 @@ Rails.application.routes.draw do
 
   namespace :api, defaults: { format: :json } do
     # Authentication endpoints
-    post '/login', to: 'auth#login'
+    post '/login',  to: 'auth#login'
     post '/signup', to: 'auth#signup'
 
-    resources :projects, only: [] do
+    resources :projects do
+      member { post :ws_token }
       resources :terminals, only: [:create], controller: 'terminals'
     end
   end

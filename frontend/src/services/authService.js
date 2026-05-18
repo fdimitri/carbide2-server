@@ -48,15 +48,21 @@ const authService = {
     delete api.defaults.headers.common['Authorization']
   },
 
+  userId() {
+    const token = localStorage.getItem('token') || localStorage.getItem('auth_token')
+    if (!token) return null
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1]))
+      return payload.sub || payload.user
+    } catch { return null }
+  },
+
   async checkAuth() {
     const token = localStorage.getItem('auth_token')
     if (token) {
       this.token = token
       api.defaults.headers.common['Authorization'] = `Bearer ${token}`
-      // Optionally verify token with backend
       try {
-        // const response = await api.get('/users/current')
-        // this.currentUser = response.data.user
         return true
       } catch {
         this.logout()
