@@ -3,7 +3,7 @@ import axios from 'axios'
 const API = import.meta.env.VITE_API_URL || 'http://localhost:3000'
 
 function authHeaders() {
-  const token = localStorage.getItem('token')
+  const token = localStorage.getItem('auth_token')
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 

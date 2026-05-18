@@ -15,7 +15,7 @@
             {{ terminalLoading ? 'Opening...' : terminalActive ? 'New Terminal' : 'Open Terminal' }}
           </button>
         </div>
-        <div ref="terminalEl" class="xterm-container"></div>
+        <div ref="terminalEl" class="xterm-container" @click="xterm?.focus()"></div>
         <div v-if="!terminalActive" class="panel-placeholder">
           Click "Open Terminal" to start a shell session.
         </div>
@@ -58,7 +58,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount, nextTick, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount, nextTick, computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
@@ -146,7 +146,23 @@ onMounted(async () => {
   }
 })
 
+// Re-focus xterm whenever terminal becomes active (handles re-renders)
+watch(terminalActive, (active) => {
+  if (active) nextTick(() => xterm?.focus())
+})
+
+// Route keystrokes to xterm when it's active and nothing else has focus
+function onDocumentKeydown(e) {
+  if (!terminalActive.value || !xterm) return
+  const tag = document.activeElement?.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return
+  xterm.focus()
+}
+
+onMounted(() => { document.addEventListener('keydown', onDocumentKeydown) })
+
 onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onDocumentKeydown)
   offHandlers.forEach(off => off())
   workerSocket.disconnect()
   xterm?.dispose()
@@ -168,6 +184,7 @@ async function openTerminal() {
       fitAddon.fit()
 
       xterm.onData(data => {
+        console.log('[xterm onData] data:', JSON.stringify(data), 'terminalId:', terminalId, 'wsReady:', workerSocket._ready)
         workerSocket.send('term', 'input', { terminal_id: terminalId, data })
       })
 
@@ -180,6 +197,9 @@ async function openTerminal() {
 
     workerSocket.send('term', 'join', { terminal_id: terminalId })
     terminalActive.value = true
+    // Focus AFTER Vue re-renders (terminalActive flip may cause DOM changes)
+    await nextTick()
+    xterm.focus()
   } catch (e) {
     error.value = e.message || 'Failed to open terminal'
   } finally {

@@ -49,7 +49,7 @@ const authService = {
   },
 
   userId() {
-    const token = localStorage.getItem('token') || localStorage.getItem('auth_token')
+    const token = localStorage.getItem('auth_token')
     if (!token) return null
     try {
       const payload = JSON.parse(atob(token.split('.')[1]))
