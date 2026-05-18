@@ -1,6 +1,13 @@
 import axios from 'axios'
 
-const API_URL = 'http://localhost:3000/api'
+// Auto-detect API URL based on host (supports localhost and WSL bridged networks)
+const getApiUrl = () => {
+  const host = window.location.hostname
+  const port = '3000'
+  return `http://${host}:${port}/api`
+}
+
+const API_URL = getApiUrl()
 
 const api = axios.create({
   baseURL: API_URL,
