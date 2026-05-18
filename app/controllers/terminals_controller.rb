@@ -14,8 +14,9 @@ class TerminalsController < ActionController::API
   end
 
   private
+  
   def current_user
-    # Placeholder: in a real app use Devise current_user
-    User.first
+    # Use Devise's current_user for authenticated requests
+    super || User.first
   end
 end
