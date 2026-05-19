@@ -49,12 +49,12 @@ class DirectoryEntry < ApplicationRecord
   # Returns tree hash suitable for JSON serialisation.
   # { id, name, path, type, children: [...] }
   def self.tree_for_project(project_id)
-    entries = where(project_id: project_id).to_a
-    by_id   = entries.index_by(&:id)
-    root    = entries.find { |e| e.srcpath == '/' && e.ftype == 'folder' }
+    entries  = where(project_id: project_id).to_a
+    root     = entries.find { |e| e.srcpath == '/' && e.ftype == 'folder' }
     return [] unless root
 
-    build_tree_node(root, entries)
+    by_owner = entries.group_by(&:owner_id)
+    build_tree_node(root, by_owner)
   end
 
   def self.find_by_project_and_path(project_id, srcpath)
@@ -167,7 +167,7 @@ class DirectoryEntry < ApplicationRecord
     end
   end
 
-  def self.build_tree_node(entry, all_entries)
+  def self.build_tree_node(entry, by_owner)
     node = {
       id:      entry.id,
       name:    entry.cur_name,
@@ -175,10 +175,9 @@ class DirectoryEntry < ApplicationRecord
       type:    entry.ftype
     }
     if entry.ftype == 'folder'
-      node[:children] = all_entries
-        .select { |e| e.owner_id == entry.id }
+      node[:children] = (by_owner[entry.id] || [])
         .sort_by { |e| [e.ftype == 'folder' ? 0 : 1, e.cur_name.downcase] }
-        .map { |child| build_tree_node(child, all_entries) }
+        .map { |child| build_tree_node(child, by_owner) }
     end
     node
   end
