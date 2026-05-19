@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_18_004000) do
+ActiveRecord::Schema[8.1].define(version: 2026_05_19_000000) do
   create_table "chat_channels", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.string "name", null: false
@@ -29,6 +29,37 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_18_004000) do
     t.integer "user_id"
     t.index ["chat_channel_id"], name: "index_chat_messages_on_chat_channel_id"
     t.index ["user_id"], name: "index_chat_messages_on_user_id"
+  end
+
+  create_table "directory_entries", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.integer "created_by_id"
+    t.string "cur_name", null: false
+    t.string "ftype", default: "file", null: false
+    t.integer "owner_id"
+    t.integer "project_id", null: false
+    t.string "srcpath", null: false
+    t.datetime "updated_at", null: false
+    t.index ["owner_id"], name: "index_directory_entries_on_owner_id"
+    t.index ["project_id", "srcpath"], name: "index_directory_entries_on_project_id_and_srcpath", unique: true
+    t.index ["project_id"], name: "index_directory_entries_on_project_id"
+  end
+
+  create_table "file_changes", force: :cascade do |t|
+    t.text "change_data"
+    t.string "change_type", null: false
+    t.datetime "created_at", null: false
+    t.integer "directory_entry_id", null: false
+    t.integer "end_char"
+    t.integer "end_line"
+    t.datetime "mtime"
+    t.integer "revision", default: 0, null: false
+    t.integer "start_char", default: 0
+    t.integer "start_line", default: 0
+    t.datetime "updated_at", null: false
+    t.integer "user_id"
+    t.index ["directory_entry_id", "revision"], name: "index_file_changes_on_directory_entry_id_and_revision"
+    t.index ["directory_entry_id"], name: "index_file_changes_on_directory_entry_id"
   end
 
   create_table "projects", force: :cascade do |t|
@@ -62,4 +93,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_18_004000) do
   add_foreign_key "chat_channels", "projects"
   add_foreign_key "chat_messages", "chat_channels"
   add_foreign_key "chat_messages", "users"
+  add_foreign_key "directory_entries", "projects"
+  add_foreign_key "file_changes", "directory_entries"
 end
