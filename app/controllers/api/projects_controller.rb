@@ -39,14 +39,19 @@ class Api::ProjectsController < Api::BaseController
   # worker can re-scan the new directory on next startup.
   def set_root
     project  = find_project
-    new_path = params.require(:root_path).to_s.strip
+    new_path = params[:root_path].to_s.strip
 
     return render json: { error: 'root_path is blank' }, status: :unprocessable_entity if new_path.empty?
 
     clean_vfs = ActiveModel::Type::Boolean.new.cast(params[:clean_vfs])
 
     ActiveRecord::Base.transaction do
-      project.directory_entries.destroy_all if clean_vfs
+      if clean_vfs
+        # Two-query bulk delete — avoids loading every record into Ruby.
+        # Delete file_changes first (FK constraint), then the entries themselves.
+        FileChange.where(directory_entry_id: project.directory_entries.select(:id)).delete_all
+        project.directory_entries.delete_all
+      end
       project.update!(root_path: new_path)
     end
 
