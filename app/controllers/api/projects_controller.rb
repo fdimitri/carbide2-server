@@ -11,8 +11,9 @@ class Api::ProjectsController < Api::BaseController
   end
 
   def create
-    project = current_user.projects.build(project_params)
+    project = Project.new(project_params)
     if project.save
+      current_user.project_memberships.create!(project: project)
       render json: project_json(project), status: :created
     else
       render json: { errors: project.errors.full_messages }, status: :unprocessable_entity

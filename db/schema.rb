@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_20_110000) do
+ActiveRecord::Schema[8.1].define(version: 2026_05_20_120000) do
   create_table "chat_channels", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.string "name", null: false
@@ -62,6 +62,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_20_110000) do
     t.index ["directory_entry_id"], name: "index_file_changes_on_directory_entry_id"
   end
 
+  create_table "project_memberships", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.integer "project_id", null: false
+    t.datetime "updated_at", null: false
+    t.integer "user_id", null: false
+    t.index ["project_id"], name: "index_project_memberships_on_project_id"
+    t.index ["user_id", "project_id"], name: "index_project_memberships_on_user_id_and_project_id", unique: true
+    t.index ["user_id"], name: "index_project_memberships_on_user_id"
+  end
+
   create_table "project_settings", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.integer "flush_bytes"
@@ -79,8 +89,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_20_110000) do
     t.string "name"
     t.string "repo_url"
     t.datetime "updated_at", null: false
-    t.integer "user_id", null: false
-    t.index ["user_id"], name: "index_projects_on_user_id"
   end
 
   create_table "user_preferences", force: :cascade do |t|
@@ -122,6 +130,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_20_110000) do
   add_foreign_key "chat_messages", "users"
   add_foreign_key "directory_entries", "projects"
   add_foreign_key "file_changes", "directory_entries"
+  add_foreign_key "project_memberships", "projects"
+  add_foreign_key "project_memberships", "users"
   add_foreign_key "project_settings", "projects"
   add_foreign_key "user_preferences", "users"
 end
