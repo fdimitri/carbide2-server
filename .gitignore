@@ -5,3 +5,4 @@ log/*
 *.lock
 db/*sqlite3*
 
+worker/carbide.yml
