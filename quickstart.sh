@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # dev.sh — start all three Carbide2 dev processes
-#CARBIDE_USE_DOCKER=1
+export CARBIDE_USE_DOCKER=1
+export CARBIDE_SHELL_IMAGE=carbide2-shell
+
 set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 

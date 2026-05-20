@@ -46,6 +46,7 @@ gem 'dotenv-rails', groups: [:development, :test]
 # Worker: EventMachine WebSocket server + PTY
 gem 'eventmachine'
 gem 'em-websocket'
+gem 'rb-inotify'
 
 group :development, :test do
   # See https://guides.rubyonrails.org/debugging_rails_applications.html#debugging-with-the-debug-gem
