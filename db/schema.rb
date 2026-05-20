@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_20_100000) do
+ActiveRecord::Schema[8.1].define(version: 2026_05_20_110000) do
   create_table "chat_channels", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.string "name", null: false
@@ -83,6 +83,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_20_100000) do
     t.index ["user_id"], name: "index_projects_on_user_id"
   end
 
+  create_table "user_preferences", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.string "date_format"
+    t.integer "editor_font_size"
+    t.string "first_name"
+    t.string "last_name"
+    t.boolean "notifications_enabled"
+    t.integer "tab_width"
+    t.string "theme"
+    t.string "timezone"
+    t.datetime "updated_at", null: false
+    t.integer "user_id", null: false
+    t.string "username"
+    t.index ["user_id"], name: "index_user_preferences_on_user_id", unique: true
+  end
+
   create_table "users", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.datetime "current_sign_in_at"
@@ -107,4 +123,5 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_20_100000) do
   add_foreign_key "directory_entries", "projects"
   add_foreign_key "file_changes", "directory_entries"
   add_foreign_key "project_settings", "projects"
+  add_foreign_key "user_preferences", "users"
 end

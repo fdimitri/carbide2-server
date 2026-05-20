@@ -6,6 +6,10 @@ Rails.application.routes.draw do
     post '/login',  to: 'auth#login'
     post '/signup', to: 'auth#signup'
 
+    # User preferences
+    get   '/preferences', to: 'preferences#show'
+    patch '/preferences', to: 'preferences#update'
+
     resources :projects do
       member do
         post  :ws_token

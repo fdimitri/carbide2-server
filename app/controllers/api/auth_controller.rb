@@ -42,9 +42,19 @@ class Api::AuthController < ActionController::API
   end
 
   def user_response(user)
+    pref = user.user_preference
     {
-      id: user.id,
-      email: user.email
+      id:                    user.id,
+      email:                 user.email,
+      first_name:            pref&.first_name,
+      last_name:             pref&.last_name,
+      username:              pref&.username,
+      timezone:              pref&.timezone,
+      theme:                 pref&.theme,
+      date_format:           pref&.date_format,
+      editor_font_size:      pref&.editor_font_size,
+      tab_width:             pref&.tab_width,
+      notifications_enabled: pref&.notifications_enabled
     }
   end
 
