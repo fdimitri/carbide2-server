@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_19_100000) do
+ActiveRecord::Schema[8.1].define(version: 2026_05_19_110000) do
   create_table "chat_channels", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.string "name", null: false
@@ -62,6 +62,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_19_100000) do
     t.index ["directory_entry_id"], name: "index_file_changes_on_directory_entry_id"
   end
 
+  create_table "project_settings", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.integer "flush_bytes", default: 20, null: false
+    t.float "flush_interval_s", default: 0.8, null: false
+    t.integer "project_id", null: false
+    t.string "shell_image"
+    t.datetime "updated_at", null: false
+    t.index ["project_id"], name: "index_project_settings_on_project_id", unique: true
+  end
+
   create_table "projects", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.text "description"
@@ -96,4 +106,5 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_19_100000) do
   add_foreign_key "chat_messages", "users"
   add_foreign_key "directory_entries", "projects"
   add_foreign_key "file_changes", "directory_entries"
+  add_foreign_key "project_settings", "projects"
 end

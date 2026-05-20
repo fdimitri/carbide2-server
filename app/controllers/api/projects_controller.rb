@@ -66,6 +66,24 @@ class Api::ProjectsController < Api::BaseController
     render json: { token: token, project_id: project.id }
   end
 
+  # GET /api/projects/:id/settings
+  def settings
+    project = find_project
+    setting = project.project_setting || project.build_project_setting
+    render json: settings_json(setting)
+  end
+
+  # PATCH /api/projects/:id/settings
+  def update_settings
+    project = find_project
+    setting = project.project_setting || project.build_project_setting
+    setting.assign_attributes(settings_params)
+    setting.save!
+    render json: settings_json(setting)
+  rescue ActiveRecord::RecordInvalid => e
+    render json: { error: e.message }, status: :unprocessable_entity
+  end
+
   private
 
   def find_project
@@ -76,6 +94,10 @@ class Api::ProjectsController < Api::BaseController
     params.require(:project).permit(:name, :description, :root_path)
   end
 
+  def settings_params
+    params.permit(:flush_interval_s, :flush_bytes, :shell_image)
+  end
+
   def project_json(project)
     {
       id:          project.id,
@@ -83,6 +105,15 @@ class Api::ProjectsController < Api::BaseController
       description: project.description,
       root_path:   project.root_path,
       created_at:  project.created_at
+    }
+  end
+
+  def settings_json(setting)
+    {
+      project_id:       setting.project_id,
+      flush_interval_s: setting.flush_interval_s,
+      flush_bytes:      setting.flush_bytes,
+      shell_image:      setting.shell_image
     }
   end
 end

@@ -10,6 +10,8 @@ Rails.application.routes.draw do
       member do
         post  :ws_token
         patch :set_root
+        get   :settings
+        patch :settings, action: :update_settings
       end
       resources :chat_channels, only: [:index, :create], controller: 'chat_channels' do
         resources :chat_messages, only: [:index, :create], controller: 'chat_messages'
