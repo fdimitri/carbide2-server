@@ -1,0 +1,38 @@
+# Dockerfile.shell — base image for Carbide2 terminal containers.
+#
+# Build and tag:
+#   docker build -f Dockerfile.shell -t carbide2-shell .
+#
+# Override the image used by the worker with:
+#   CARBIDE_SHELL_IMAGE=carbide2-shell  (in dev.sh or .env)
+#
+# The project directory is mounted at /workspace by ProjectContainer.
+# Customise this file freely: add languages, tools, dotfiles, etc.
+
+FROM ubuntu:24.04
+
+# Prevent apt from prompting for timezone etc.
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    bash-completion \
+    git \
+    curl \
+    wget \
+    vim \
+    nano \
+    less \
+    man-db \
+    build-essential \
+    python3 \
+    python3-pip \
+    nodejs \
+    npm \
+    && rm -rf /var/lib/apt/lists/*
+
+# Ensure /workspace exists so the mount point is always available.
+RUN mkdir -p /workspace
+
+WORKDIR /workspace
+CMD ["/bin/bash", "-l"]
