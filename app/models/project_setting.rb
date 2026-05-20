@@ -1,6 +1,6 @@
 # ProjectSetting — per-project runtime configuration.
-# One row per project (created on first PATCH /api/projects/:id/settings).
-# When a row does not exist the column defaults apply (see migration).
+# One row per project (seeded by migration for existing projects).
+# Nil values mean "use system default" (enforced in VfsFlusher / ProjectContainer).
 class ProjectSetting < ApplicationRecord
   belongs_to :project
 

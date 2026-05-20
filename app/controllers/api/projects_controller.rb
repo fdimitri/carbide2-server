@@ -34,25 +34,22 @@ class Api::ProjectsController < Api::BaseController
   end
 
   # PATCH /api/projects/:id/set_root
-  # Updates the on-disk root path for this project.
-  # Optional param clean_vfs: true destroys all directory_entries so the
-  # worker can re-scan the new directory on next startup.
+  # Updates the on-disk root path and optionally wipes the VFS.
+  # Redirects to update_settings so root_path lives in project_settings.
   def set_root
-    project  = find_project
-    new_path = params[:root_path].to_s.strip
+    project   = find_project
+    new_path  = params[:root_path].to_s.strip
+    clean_vfs = ActiveModel::Type::Boolean.new.cast(params[:clean_vfs])
 
     return render json: { error: 'root_path is blank' }, status: :unprocessable_entity if new_path.empty?
 
-    clean_vfs = ActiveModel::Type::Boolean.new.cast(params[:clean_vfs])
-
     ActiveRecord::Base.transaction do
       if clean_vfs
-        # Two-query bulk delete — avoids loading every record into Ruby.
-        # Delete file_changes first (FK constraint), then the entries themselves.
         FileChange.where(directory_entry_id: project.directory_entries.select(:id)).delete_all
         project.directory_entries.delete_all
       end
-      project.update!(root_path: new_path)
+      setting = project.project_setting || project.build_project_setting
+      setting.update!(root_path: new_path)
     end
 
     render json: project_json(project)
@@ -91,19 +88,20 @@ class Api::ProjectsController < Api::BaseController
   end
 
   def project_params
-    params.require(:project).permit(:name, :description, :root_path)
+    params.require(:project).permit(:name, :description)
   end
 
   def settings_params
-    params.permit(:flush_interval_s, :flush_bytes, :shell_image)
+    params.permit(:root_path, :flush_interval_s, :flush_bytes, :shell_image)
   end
 
   def project_json(project)
+    setting = project.project_setting
     {
       id:          project.id,
       name:        project.name,
       description: project.description,
-      root_path:   project.root_path,
+      root_path:   setting&.root_path,
       created_at:  project.created_at
     }
   end
@@ -111,6 +109,7 @@ class Api::ProjectsController < Api::BaseController
   def settings_json(setting)
     {
       project_id:       setting.project_id,
+      root_path:        setting.root_path,
       flush_interval_s: setting.flush_interval_s,
       flush_bytes:      setting.flush_bytes,
       shell_image:      setting.shell_image
