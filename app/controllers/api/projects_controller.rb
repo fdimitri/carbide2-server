@@ -33,6 +33,26 @@ class Api::ProjectsController < Api::BaseController
     head :no_content
   end
 
+  # PATCH /api/projects/:id/set_root
+  # Updates the on-disk root path for this project.
+  # Optional param clean_vfs: true destroys all directory_entries so the
+  # worker can re-scan the new directory on next startup.
+  def set_root
+    project  = find_project
+    new_path = params.require(:root_path).to_s.strip
+
+    return render json: { error: 'root_path is blank' }, status: :unprocessable_entity if new_path.empty?
+
+    clean_vfs = ActiveModel::Type::Boolean.new.cast(params[:clean_vfs])
+
+    ActiveRecord::Base.transaction do
+      project.directory_entries.destroy_all if clean_vfs
+      project.update!(root_path: new_path)
+    end
+
+    render json: project_json(project)
+  end
+
   # POST /api/projects/:id/ws_token
   # Returns a project-scoped JWT for the worker WebSocket connection
   def ws_token
@@ -48,7 +68,7 @@ class Api::ProjectsController < Api::BaseController
   end
 
   def project_params
-    params.require(:project).permit(:name, :description)
+    params.require(:project).permit(:name, :description, :root_path)
   end
 
   def project_json(project)
@@ -56,6 +76,7 @@ class Api::ProjectsController < Api::BaseController
       id:          project.id,
       name:        project.name,
       description: project.description,
+      root_path:   project.root_path,
       created_at:  project.created_at
     }
   end
