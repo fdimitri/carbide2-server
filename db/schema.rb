@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_19_110000) do
+ActiveRecord::Schema[8.1].define(version: 2026_05_19_120000) do
   create_table "chat_channels", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.string "name", null: false
@@ -64,8 +64,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_19_110000) do
 
   create_table "project_settings", force: :cascade do |t|
     t.datetime "created_at", null: false
-    t.integer "flush_bytes", default: 20, null: false
-    t.float "flush_interval_s", default: 0.8, null: false
+    t.integer "flush_bytes"
+    t.float "flush_interval_s"
     t.integer "project_id", null: false
     t.string "shell_image"
     t.datetime "updated_at", null: false
