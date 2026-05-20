@@ -11,4 +11,13 @@ class UserPreference < ApplicationRecord
   validates :tab_width,         inclusion: { in: [2, 4] }, allow_nil: true
   validates :date_format,       inclusion: { in: VALID_DATE_FORMATS }, allow_nil: true
   validates :theme,             inclusion: { in: VALID_THEMES }, allow_nil: true
+  validate  :timezone_is_valid_iana, if: -> { timezone.present? }
+
+  private
+
+  def timezone_is_valid_iana
+    TZInfo::Timezone.get(timezone)
+  rescue TZInfo::InvalidTimezoneIdentifier
+    errors.add(:timezone, 'is not a valid IANA timezone identifier')
+  end
 end
