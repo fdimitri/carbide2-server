@@ -3,7 +3,7 @@ dev_user = User.find_or_create_by!(email: 'dev@example.com') do |u|
   u.password = 'password'
   u.password_confirmation = 'password'
 end
-User.find_or_create_by!(email: 'admin@example.com') do |u|
+admin_user = User.find_or_create_by!(email: 'admin@example.com') do |u|
   u.password = 'password'
   u.password_confirmation = 'password'
 end
@@ -16,5 +16,6 @@ project = Project.find_or_create_by!(name: 'Demo Project') do |p|
   p.description = 'Default project for dev'
 end
 ProjectMembership.find_or_create_by!(user: dev_user, project: project)
+ProjectMembership.find_or_create_by!(user: admin_user, project: project)
 
 
