@@ -30,6 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nodejs \
     npm \
     ruby \
+    golang-go \
     && rm -rf /var/lib/apt/lists/*
 
 # Ensure /workspace exists so the mount point is always available.

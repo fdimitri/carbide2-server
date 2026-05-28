@@ -1,0 +1,66 @@
+# Carbide2 single-image deployment stack.
+#
+# Services:
+#   postgres — primary datastore (the only supported runtime DB).
+#   carbide  — unified container running Rails + worker + Vite via Foreman.
+#
+# Shell containers spawned per-project by the worker use the carbide2-shell
+# image (built separately from Dockerfile.shell) and mount the shared
+# `carbide-projects` named volume under deterministic per-project subpaths.
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: carbide2_production
+      POSTGRES_USER: carbide
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-carbide}
+    volumes:
+      - carbide-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U carbide -d carbide2_production"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [internal]
+
+  carbide:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      RAILS_ENV: ${RAILS_ENV:-production}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: carbide2_production
+      POSTGRES_USER: carbide
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-carbide}
+      WORKER_JWT_SECRET: ${WORKER_JWT_SECRET:-changeme-please}
+      WORKER_TOKEN_EXPIRY_SECONDS: ${WORKER_TOKEN_EXPIRY_SECONDS:-600}
+      CARBIDE_USE_DOCKER: "1"
+      CARBIDE_SHELL_IMAGE: ${CARBIDE_SHELL_IMAGE:-carbide2-shell}
+      # Canonical project storage root visible to both worker and shell containers.
+      PROJECTS_ROOT: /srv/projects
+      CARBIDE_CORS_ORIGINS: ${CARBIDE_CORS_ORIGINS:-}
+    volumes:
+      # Shared, container-managed project storage (no host path coupling).
+      - carbide-projects:/srv/projects
+      # Docker socket access for spawning per-project shell containers.
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "${CARBIDE_API_PORT:-3000}:3000"   # Rails API
+      - "${CARBIDE_WS_PORT:-8080}:8080"    # Worker WebSocket
+      - "${CARBIDE_WEB_PORT:-5173}:5173"   # Vite dev server
+    networks: [internal]
+
+volumes:
+  carbide-postgres:
+  carbide-projects:
+
+networks:
+  internal:
