@@ -26,8 +26,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Text-processing utilities (awk family + jq for JSON)
     gawk mawk jq \
     # Networking diagnostics: ip/ifconfig, ping, traceroute, netcat, dig, ssh
-    iproute2 iputils-ping traceroute mtr-tiny netcat-openbsd \
+    iproute2 net-tools iputils-ping traceroute mtr-tiny netcat-openbsd telnet \
     dnsutils whois tcpdump openssh-client rsync \
+    # Database clients (psql for the project Postgres, sqlite3 for local DBs,
+    # mariadb-client provides both `mariadb` and the `mysql` symlink)
+    postgresql-client sqlite3 mariadb-client \
+    # Small-but-essential CLI quality-of-life utilities
+    htop tree tmux screen file zip unzip xz-utils \
+    ripgrep fd-find ncdu lsof strace ltrace \
+    sudo bc bsdmainutils \
     # Languages: Python, Ruby, Node, Go (Rust installed via rustup below)
     python3 python3-pip python3-venv pipx \
     ruby \
@@ -39,7 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc-arm-none-eabi binutils-arm-none-eabi libnewlib-arm-none-eabi gdb-multiarch \
     gcc-avr binutils-avr avr-libc avrdude \
     # USB / serial flashing helpers used by most MCU toolchains
-    libusb-1.0-0 usbutils minicom picocom screen \
+    libusb-1.0-0 usbutils minicom picocom \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Rust (via rustup) ---------------------------------------------------------
