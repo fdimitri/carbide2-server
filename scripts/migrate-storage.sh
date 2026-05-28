@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-VOLUME="${CARBIDE_PROJECT_VOLUME:-carbide2-server_carbide-projects}"
+VOLUME="${CARBIDE_PROJECT_VOLUME:-carbide-projects}"
 ACTION="${1:-}"
 FILE="${2:-}"
 

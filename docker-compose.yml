@@ -46,6 +46,9 @@ services:
       CARBIDE_SHELL_IMAGE: ${CARBIDE_SHELL_IMAGE:-carbide2-shell}
       # Canonical project storage root visible to both worker and shell containers.
       PROJECTS_ROOT: /srv/projects
+      # Named volume that backs PROJECTS_ROOT; worker uses it to mount shell
+      # containers via --mount type=volume,source=<vol>,volume-subpath=<id>.
+      CARBIDE_PROJECTS_VOLUME: carbide-projects
       CARBIDE_CORS_ORIGINS: ${CARBIDE_CORS_ORIGINS:-}
     volumes:
       # Shared, container-managed project storage (no host path coupling).
@@ -60,7 +63,9 @@ services:
 
 volumes:
   carbide-postgres:
+    name: carbide-postgres
   carbide-projects:
+    name: carbide-projects
 
 networks:
   internal:
