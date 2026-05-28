@@ -1,0 +1,86 @@
+# GitLab CI: build & push carbide2 images to the GitLab Container Registry.
+#
+# Assumes a Docker-in-Docker runner (the default shared-runner config). If your
+# runner uses the `docker` executor with the host socket mounted instead, drop
+# the `services:` block and unset DOCKER_HOST.
+#
+# Required CI/CD variables (Settings → CI/CD → Variables) — none, if you push
+# to the project's own registry. CI_REGISTRY_USER / CI_REGISTRY_PASSWORD /
+# CI_REGISTRY are injected automatically.
+
+stages:
+  - build
+
+variables:
+  DOCKER_HOST: tcp://docker:2375
+  DOCKER_TLS_CERTDIR: ""
+  DOCKER_DRIVER: overlay2
+  DOCKER_BUILDKIT: "1"
+  # Image coordinates inside the project registry.
+  SERVER_IMAGE: $CI_REGISTRY_IMAGE/server
+  SHELL_IMAGE:  $CI_REGISTRY_IMAGE/shell
+
+.docker-base:
+  image: docker:25
+  services:
+    - name: docker:25-dind
+      command: ["--tls=false"]
+  before_script:
+    - docker info >/dev/null
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+
+# ---------------------------------------------------------------------------
+# Server image (Rails + worker + Vite, built from Dockerfile)
+# ---------------------------------------------------------------------------
+build:server:
+  extends: .docker-base
+  stage: build
+  script:
+    - |
+      TAGS="-t $SERVER_IMAGE:$CI_COMMIT_SHORT_SHA"
+      if [ "$CI_COMMIT_REF_NAME" = "$CI_DEFAULT_BRANCH" ]; then
+        TAGS="$TAGS -t $SERVER_IMAGE:latest"
+      fi
+      if [ -n "$CI_COMMIT_TAG" ]; then
+        TAGS="$TAGS -t $SERVER_IMAGE:$CI_COMMIT_TAG"
+      fi
+    - docker build --pull $TAGS -f Dockerfile .
+    - docker push --all-tags $SERVER_IMAGE
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - Dockerfile
+        - Gemfile*
+        - package*.json
+        - .gitlab-ci.yml
+
+# ---------------------------------------------------------------------------
+# Shell image (~4 GB, toolchains + net diag) — built from Dockerfile.shell.
+# Only rebuilt when its Dockerfile changes, or on tags/default branch, since
+# it's slow and rarely changes.
+# ---------------------------------------------------------------------------
+build:shell:
+  extends: .docker-base
+  stage: build
+  timeout: 2h
+  script:
+    - |
+      TAGS="-t $SHELL_IMAGE:$CI_COMMIT_SHORT_SHA"
+      if [ "$CI_COMMIT_REF_NAME" = "$CI_DEFAULT_BRANCH" ]; then
+        TAGS="$TAGS -t $SHELL_IMAGE:latest"
+      fi
+      if [ -n "$CI_COMMIT_TAG" ]; then
+        TAGS="$TAGS -t $SHELL_IMAGE:$CI_COMMIT_TAG"
+      fi
+    - docker build --pull $TAGS -f Dockerfile.shell .
+    - docker push --all-tags $SHELL_IMAGE
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - Dockerfile.shell
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - Dockerfile.shell

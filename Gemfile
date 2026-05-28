@@ -2,8 +2,8 @@ source "https://rubygems.org"
 
 # Bundle edge Rails instead: gem "rails", github: "rails/rails", branch: "main"
 gem "rails", "~> 8.1.3"
-# Use sqlite3 as the database for Active Record
-gem "sqlite3", ">= 2.1"
+# Postgres is the only supported runtime datastore
+gem "pg", "~> 1.5"
 # Use the Puma web server [https://github.com/puma/puma]
 gem "puma", ">= 5.0"
 # Build JSON APIs with ease [https://github.com/rails/jbuilder]
@@ -16,9 +16,10 @@ gem "bcrypt", "~> 3.1.7"
 gem "tzinfo-data", platforms: %i[ windows jruby ]
 
 # Use the database-backed adapters for Rails.cache, Active Job, and Action Cable
-gem "solid_cache"
-gem "solid_queue"
-gem "solid_cable"
+# (Disabled for now — carbide2 uses a custom EM-based worker for realtime traffic.)
+# gem "solid_cache"
+# gem "solid_queue"
+# gem "solid_cable"
 
 # Reduces boot times through caching; required in config/boot.rb
 gem "bootsnap", require: false
@@ -47,6 +48,9 @@ gem 'dotenv-rails', groups: [:development, :test]
 gem 'eventmachine'
 gem 'em-websocket'
 gem 'rb-inotify'
+
+# Process supervisor for multi-process container (Rails + worker + Vite)
+gem 'foreman'
 
 group :development, :test do
   # See https://guides.rubyonrails.org/debugging_rails_applications.html#debugging-with-the-debug-gem

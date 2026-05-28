@@ -1,8 +1,14 @@
 #!/bin/bash -e
 
-# If running the rails server then create or migrate existing database
-if [ "${@: -2:1}" == "./bin/rails" ] && [ "${@: -1:1}" == "server" ]; then
-  ./bin/rails db:prepare
+# Run db:prepare for the long-running app processes (foreman launches rails,
+# worker, and vite together; the worker queries ActiveRecord at startup so the
+# schema must exist). Skip for one-off commands by setting SKIP_DB_PREPARE=1.
+if [[ "${SKIP_DB_PREPARE:-0}" != "1" ]]; then
+  case "$*" in
+    *foreman*|*"bin/rails server"*|*"rails server"*)
+      ./bin/rails db:prepare
+      ;;
+  esac
 fi
 
 exec "${@}"

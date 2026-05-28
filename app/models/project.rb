@@ -7,4 +7,24 @@ class Project < ActiveRecord::Base
   has_one  :project_setting,   dependent: :destroy
 
   validates :name, presence: true
+
+  after_create :ensure_project_setting!
+
+  # Default per-project workspace directory inside the shared projects volume.
+  # Worker, FsLoader, VfsFlusher, ProjectContainer all agree on this layout.
+  PROJECTS_ROOT = ENV.fetch('PROJECTS_ROOT', '/srv/projects').freeze
+
+  def default_root_path
+    File.join(PROJECTS_ROOT, id.to_s)
+  end
+
+  # Creates the project_setting row (if missing) with a sane root_path
+  # and ensures the on-disk directory exists. Idempotent.
+  def ensure_project_setting!
+    setting = project_setting || build_project_setting
+    setting.root_path = default_root_path if setting.root_path.blank?
+    setting.save! if setting.changed? || setting.new_record?
+    FileUtils.mkdir_p(setting.root_path) rescue nil
+    setting
+  end
 end

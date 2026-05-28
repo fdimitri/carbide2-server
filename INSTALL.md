@@ -1,199 +1,253 @@
 # Carbide2 Server — Installation Guide
 
+The supported deployment is **Docker Compose**. A native install is still
+possible but no longer tested; see "Native install" at the bottom.
+
 ## System Requirements
 
-| Component | Version |
-|-----------|---------|
-| Ruby      | 3.4.x   |
-| Bundler   | 2.x     |
-| Node.js   | 18.x+   |
-| npm       | 9.x+    |
-| SQLite    | 3.8+    |
-| OS        | Linux (inotify required for FS watching) |
+| Component       | Version                                                |
+|-----------------|--------------------------------------------------------|
+| Docker Engine   | 25.0+ (named-volume `subpath` mounts)                  |
+| Docker Compose  | v2 (the `docker compose` plugin)                       |
+| OS              | Linux (inotify required for FS watching)               |
+| Disk            | ~6 GB free (carbide image ~1.5 GB, shell image ~4 GB)  |
+
+That's it on the host side — Ruby, Node, Postgres, etc. all live inside the
+containers.
+
+---
+
+## TL;DR
+
+```bash
+git clone --recurse-submodules https://github.com/fdimitri/carbide2-server.git
+cd carbide2-server
+./quickstart.sh --rebuild           # add --shell to also build the terminal image (~4GB, slow)
+```
+
+The script does preflight checks, generates a sane `.env`, brings up the
+stack, waits for `/up`, and prints the URLs and dev credentials. The numbered
+steps below are what `quickstart.sh` does, broken out for the curious or for
+production deploys.
 
 ---
 
 ## 1. Clone the repository
 
+The Vue client lives in a submodule (`clients/carbide2-client`), so use
+`--recurse-submodules` or pull them after the fact:
+
 ```bash
 git clone --recurse-submodules https://github.com/fdimitri/carbide2-server.git
 cd carbide2-server
-```
 
-If you already cloned without `--recurse-submodules`:
-
-```bash
+# Or, if you already cloned without it:
 git submodule update --init --recursive
 ```
 
 ---
 
-## 2. Install Ruby (via RVM)
+## 2. (Optional) Configure environment
 
-```bash
-# Install RVM if not present
-\curl -sSL https://get.rvm.io | bash -s stable
-source ~/.rvm/scripts/rvm
-
-# Install and use Ruby 3.4.2
-rvm install 3.4.2
-rvm use 3.4.2 --default
-```
-
-Alternatively use **rbenv**:
-
-```bash
-rbenv install 3.4.2
-rbenv global 3.4.2
-```
-
----
-
-## 3. Install Ruby gems
-
-```bash
-gem install bundler
-bundle install
-```
-
----
-
-## 4. Configure environment
-
-Copy the example env file and fill in values:
-
-```bash
-cp .env.example .env
-```
-
-Minimum required values for local development:
+A `.env` file at the repo root is auto-loaded by Compose. The defaults work
+out-of-the-box for local development; override these for non-local deploys:
 
 ```dotenv
-# Database (defaults to storage/development.sqlite3 — can leave blank for default)
-DATABASE_URL=sqlite3:storage/development.sqlite3
+# Strong password if you expose Postgres beyond localhost
+POSTGRES_PASSWORD=carbide
 
-# Secret used to sign worker JWT tokens — any non-empty string works locally
-WORKER_JWT_SECRET=changeme
+# JWT secret used to sign worker tokens (MUST be set in production)
+WORKER_JWT_SECRET=changeme-please
 
-# How long worker tokens stay valid (seconds)
-WORKER_TOKEN_EXPIRY_SECONDS=600
+# CORS origins (comma-separated list of literal origins or /regex/ patterns).
+# Leave unset for the dev default (localhost / 127.0.0.1 / 192.168.x.x).
+CARBIDE_CORS_ORIGINS=
+
+# Run as RAILS_ENV=production (defaults to development)
+# RAILS_ENV=production
 ```
 
-OAuth keys (`OAUTH_GITHUB_*`, `OAUTH_GOOGLE_*`) are optional — omit them if you
-don't need social login.
+`.env` is gitignored.
 
 ---
 
-## 5. Set up the database
+## 3. Build and start the stack
 
 ```bash
-bundle exec rails db:setup      # creates DB, runs migrations, seeds dev user
+docker compose up --build -d
 ```
 
-This seeds a default developer account:
+This builds two images and starts two containers:
 
-| Field    | Value           |
-|----------|-----------------|
-| Email    | dev@example.com |
-| Password | password        |
+| Service     | Image                  | Ports                          |
+|-------------|------------------------|--------------------------------|
+| `postgres`  | `postgres:16`          | 5432 (internal only)           |
+| `carbide`   | `carbide2-server`      | 3000 (Rails), 8080 (worker WS), 5173 (Vite dev) |
 
-And a default project: **Demo Project** (id: 1).
+The `carbide` image runs three processes under Foreman:
+Rails API + worker (PTY/FS/chat) + Vite dev server.
+
+Database migrations run automatically on container start via
+`bin/docker-entrypoint`.
+
+Also build the **shell image** used to spawn per-project terminals:
+
+```bash
+docker build -f Dockerfile.shell -t carbide2-shell .
+```
+
+This is a separate ~4 GB image with build tools, embedded toolchains
+(arm-none-eabi-gcc for STM32, avr-gcc for Arduino/AVR, esptool + PlatformIO
+for ESP), Rust, Python, Ruby, Node, Go, and net diagnostics.
 
 ---
 
-## 6. Install Node dependencies (Vue client)
+## 4. Verify the install
+
+Health check:
 
 ```bash
-cd clients/carbide2-client
-npm install
-cd ../..
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3000/up   # → 200
+```
+
+Browser: open <http://localhost:5173>, log in with the seeded dev account:
+
+| Field    | Value             |
+|----------|-------------------|
+| Email    | `dev@example.com` |
+| Password | `password`        |
+
+You should land on the dashboard showing the seeded **Demo Project**.
+
+---
+
+## 5. Import a project into the workspace
+
+New projects start empty but already have their `root_path` wired to
+`/srv/projects/<id>/` inside the shared volume (set automatically by
+`Project#ensure_project_setting!` on create). Three ways to populate one:
+
+**a) From a host directory** (one-shot copy via the helper script):
+
+```bash
+./scripts/import-host-dir.sh /path/to/your/code 1
+```
+
+This rsyncs into the `carbide-projects` volume at `/srv/projects/1/`,
+excluding `.git`, `node_modules`, `tmp`, `log`, `vendor/bundle`, then
+restarts the worker so `FsLoader` re-ingests.
+
+**b) From the carbide UI**: open a terminal and `git clone` directly into
+`/workspace`. New files are picked up by the inotify watcher.
+
+**c) Manually**: write to `/srv/projects/<id>/` inside the `carbide-projects`
+volume via any container that mounts it, then `docker compose restart carbide`.
+
+---
+
+## Storage layout
+
+All persistent data lives in two named Docker volumes:
+
+| Volume             | Mount point          | Contents                          |
+|--------------------|----------------------|-----------------------------------|
+| `carbide-postgres` | (inside postgres)    | Postgres datadir                  |
+| `carbide-projects` | `/srv/projects`      | Per-project workspaces (`/<id>/`) |
+
+Backup/restore the project volume with the included helper:
+
+```bash
+./scripts/migrate-storage.sh export ~/carbide-projects.tar.gz
+./scripts/migrate-storage.sh import ~/carbide-projects.tar.gz
 ```
 
 ---
 
-## 7. (Optional) Import a project directory into the virtual filesystem
+## Common operations
 
 ```bash
-bundle exec rails runner "FsLoader.new(project_id: 1, root_path: '/path/to/your/project').load!"
+# View live logs (all services)
+docker compose logs -f
+
+# Rails console
+docker compose exec carbide bundle exec rails console
+
+# psql against the dev database
+docker compose exec postgres psql -U carbide -d carbide2_development
+
+# Rebuild after changing Dockerfile / Gemfile / package.json
+docker compose up --build -d
+
+# Stop everything (volumes preserved)
+docker compose down
+
+# Stop AND delete all data (irreversible)
+docker compose down -v
 ```
 
-Skip this step to start with an empty filesystem.
-
----
-
-## 8. Start the development stack
+If your user isn't in the `docker` group, prefix the above with
+`sg docker -c '...'` or add yourself:
 
 ```bash
-./dev.sh
-```
-
-This launches three processes:
-
-| Process      | Address                  | Log                          |
-|--------------|--------------------------|------------------------------|
-| Rails API    | http://localhost:3000    | stdout                       |
-| Worker (WS)  | ws://localhost:8080      | /tmp/carbide2-worker.log     |
-| Vite (Vue)   | http://localhost:5173    | stdout                       |
-
-Stop everything with **Ctrl-C**.
-
----
-
-## 9. Verify the install
-
-Open http://localhost:5173, log in with `dev@example.com` / `password`, and open
-the Demo Project. The file explorer should populate and files should be editable.
-
-Worker logs:
-
-```bash
-tail -f /tmp/carbide2-worker.log
+sudo usermod -aG docker $USER
+newgrp docker
 ```
 
 ---
 
 ## Running tests
 
-### Rails (unit/model tests)
-
 ```bash
-bundle exec rails test
-```
+# Rails unit/model tests (inside the carbide container)
+docker compose exec carbide bundle exec rails test
 
-### Vue / Playwright end-to-end tests
-
-Requires the full dev stack (`./dev.sh`) to be running first.
-
-```bash
+# Playwright e2e (against the running stack, run on the host)
 cd clients/carbide2-client
-
-# All e2e tests
-npm run test:e2e
-
-# Smoke test (console + WS frames)
-npm run test:smoke
-
-# Individual specs
-npx playwright test tests/e2e/editor.spec.js --reporter=list
-npx playwright test tests/e2e/terminal.spec.js --reporter=list
-npx playwright test tests/e2e/chat.spec.js --reporter=list
+npx playwright install --with-deps   # one-time
+npx playwright test --reporter=list
 ```
+
+Some `chat.spec.js` selectors are stale (the dock got refactored) and will
+fail until updated; the WS path and FS path are still covered by the smoke
+and editor specs.
 
 ---
 
 ## Troubleshooting
 
-**`bundle install` fails on `eventmachine`**  
-Install the build tools: `sudo apt install build-essential libssl-dev`
+**`permission denied while trying to connect to the Docker daemon socket`**
+You're not in the `docker` group. `sudo usermod -aG docker $USER && newgrp docker`.
 
-**Worker won't start / JWT errors**  
-Check that `WORKER_JWT_SECRET` is set in `.env` and matches what the Rails API
-uses to sign tokens.
+**`docker compose: unknown command`**
+You're on Compose v1 (legacy `docker-compose`). Install v2:
+`sudo apt install docker-compose-plugin`. The `docker-compose.yml` is
+compatible with both.
 
-**Monaco editor shows "Loading…" indefinitely**  
-The worker WS must be running on port 8080. Check `/tmp/carbide2-worker.log` for
-connection errors.
+**Rails error: `Database "carbide2_development" does not exist`**
+The entrypoint runs `db:prepare` on startup, but something killed the previous
+attempt. Try `docker compose restart carbide` and check
+`docker compose logs carbide`. If `POSTGRES_DB` is set in `.env` or shell env,
+unset it — `config/database.yml` picks the env-suffixed name.
 
-**SQLite `database is locked`**  
-The DB runs in WAL mode; ensure no stale Rails/worker processes are holding the
-file open: `pkill -f 'rails server'; pkill -f 'worker.rb'`
+**Project file tree is empty in the UI**
+The project's workspace directory (`/srv/projects/<id>/`) is empty. Import
+something into it — see step 5.
+
+**Terminal creation: `No such file or directory - docker`**
+The `carbide` image was built without the Docker CLI. Rebuild:
+`docker compose build --no-cache carbide`.
+
+**Worker logs flood with VfsFlusher entries**
+Expected during the initial FS load (every file gets persisted to the DB).
+The current loader has no exclude list — `node_modules` and `.git` get
+ingested. Skip large project trees or accept the one-time ingestion cost.
+
+---
+
+## Native install (legacy, untested)
+
+The pre-Docker install path (`./dev.sh` with Ruby/Node/SQLite on the host) is
+preserved in the git history but is no longer the supported configuration and
+has not been tested against the current Postgres-only `database.yml`. Use it
+at your own risk; the Docker path above is the source of truth.
+
