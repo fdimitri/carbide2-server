@@ -15,6 +15,8 @@ dev_user.create_user_preference! unless dev_user.user_preference
 project = Project.find_or_create_by!(name: 'Demo Project') do |p|
   p.description = 'Default project for dev'
 end
+# Backfill for projects created before the after_create hook existed.
+project.ensure_project_setting!
 ProjectMembership.find_or_create_by!(user: dev_user, project: project)
 ProjectMembership.find_or_create_by!(user: admin_user, project: project)
 

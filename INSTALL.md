@@ -17,6 +17,21 @@ containers.
 
 ---
 
+## TL;DR
+
+```bash
+git clone --recurse-submodules https://github.com/fdimitri/carbide2-server.git
+cd carbide2-server
+./quickstart.sh --rebuild           # add --shell to also build the terminal image (~4GB, slow)
+```
+
+The script does preflight checks, generates a sane `.env`, brings up the
+stack, waits for `/up`, and prints the URLs and dev credentials. The numbered
+steps below are what `quickstart.sh` does, broken out for the curious or for
+production deploys.
+
+---
+
 ## 1. Clone the repository
 
 The Vue client lives in a submodule (`clients/carbide2-client`), so use
@@ -108,27 +123,25 @@ You should land on the dashboard showing the seeded **Demo Project**.
 
 ## 5. Import a project into the workspace
 
-New projects start empty. To populate one, see the "Import / Export" section
-in `README.md`. Briefly:
+New projects start empty but already have their `root_path` wired to
+`/srv/projects/<id>/` inside the shared volume (set automatically by
+`Project#ensure_project_setting!` on create). Three ways to populate one:
+
+**a) From a host directory** (one-shot copy via the helper script):
 
 ```bash
-# Set the project's storage root (one-time, per project)
-docker compose exec carbide bundle exec rails runner \
-  'p = Project.find(1); s = p.project_setting || p.build_project_setting; \
-   s.update!(root_path: "/srv/projects/1")'
-
-# Copy files into the shared volume at the matching subpath
-docker run --rm \
-  -v carbide-projects:/dst \
-  -v /path/to/your/project:/src:ro \
-  alpine sh -c "mkdir -p /dst/1 && cp -a /src/. /dst/1/"
-
-# Trigger a full FS load
-docker compose restart carbide
+./scripts/import-host-dir.sh /path/to/your/code 1
 ```
 
-Or, simpler: open a terminal in the carbide UI and `git clone` directly into
-`/workspace`.
+This rsyncs into the `carbide-projects` volume at `/srv/projects/1/`,
+excluding `.git`, `node_modules`, `tmp`, `log`, `vendor/bundle`, then
+restarts the worker so `FsLoader` re-ingests.
+
+**b) From the carbide UI**: open a terminal and `git clone` directly into
+`/workspace`. New files are picked up by the inotify watcher.
+
+**c) Manually**: write to `/srv/projects/<id>/` inside the `carbide-projects`
+volume via any container that mounts it, then `docker compose restart carbide`.
 
 ---
 
@@ -217,8 +230,8 @@ attempt. Try `docker compose restart carbide` and check
 unset it — `config/database.yml` picks the env-suffixed name.
 
 **Project file tree is empty in the UI**
-The project's `root_path` isn't set, or the worker hasn't run an FS load yet.
-See step 5 above.
+The project's workspace directory (`/srv/projects/<id>/`) is empty. Import
+something into it — see step 5.
 
 **Terminal creation: `No such file or directory - docker`**
 The `carbide` image was built without the Docker CLI. Rebuild:
