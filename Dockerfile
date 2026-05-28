@@ -23,10 +23,18 @@ RUN apt-get update -qq && \
       tini && \
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install --no-install-recommends -y nodejs && \
+    install -m 0755 -d /etc/apt/keyrings && \
+    curl -fsSL https://download.docker.com/linux/debian/gpg \
+      -o /etc/apt/keyrings/docker.asc && \
+    chmod a+r /etc/apt/keyrings/docker.asc && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+      https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" \
+      > /etc/apt/sources.list.d/docker.list && \
+    apt-get update -qq && \
+    apt-get install --no-install-recommends -y docker-ce-cli && \
     rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
-ENV BUNDLE_PATH="/usr/local/bundle" \
-    LD_PRELOAD="/usr/local/lib/$(uname -m)-linux-gnu/libjemalloc.so.2"
+ENV BUNDLE_PATH="/usr/local/bundle"
 
 # --- Bundle install ---
 FROM base AS gems
@@ -54,12 +62,14 @@ RUN bundle exec bootsnap precompile -j 1 --gemfile app/ lib/ || true
 
 # Foreman launches Rails, worker, and Vite together per Procfile.
 # Tini is PID 1 for clean signal forwarding.
-ENV RAILS_ENV=production \
-    PORT=3000 \
+# RAILS_ENV is intentionally NOT set here — docker-compose.yml provides the
+# runtime default (currently 'development'). Override via the compose file or
+# `docker run -e RAILS_ENV=production` for production deploys.
+ENV PORT=3000 \
     WORKER_PORT=8080 \
     VITE_PORT=5173
 
 EXPOSE 3000 8080 5173
 
-ENTRYPOINT ["/usr/bin/tini", "--"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/app/bin/docker-entrypoint"]
 CMD ["bundle", "exec", "foreman", "start", "-f", "Procfile"]

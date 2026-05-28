@@ -13,13 +13,15 @@ services:
     image: postgres:16
     restart: unless-stopped
     environment:
-      POSTGRES_DB: carbide2_production
+      # Bootstrap DB created on first run. Rails db:prepare creates the
+      # per-environment DB (carbide2_development / _test / _production) on top.
+      POSTGRES_DB: carbide
       POSTGRES_USER: carbide
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-carbide}
     volumes:
       - carbide-postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U carbide -d carbide2_production"]
+      test: ["CMD-SHELL", "pg_isready -U carbide -d carbide"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -34,10 +36,11 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      RAILS_ENV: ${RAILS_ENV:-production}
+      RAILS_ENV: ${RAILS_ENV:-development}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
-      POSTGRES_DB: carbide2_production
+      # POSTGRES_DB intentionally unset: config/database.yml picks the
+      # per-environment name (carbide2_development, _test, _production).
       POSTGRES_USER: carbide
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-carbide}
       WORKER_JWT_SECRET: ${WORKER_JWT_SECRET:-changeme-please}

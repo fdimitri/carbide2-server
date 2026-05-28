@@ -15,23 +15,52 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash \
-    bash-completion \
-    git \
-    curl \
-    wget \
-    vim \
-    nano \
-    less \
-    man-db \
-    build-essential \
-    python3 \
-    python3-pip \
-    nodejs \
-    npm \
+    # Shell & docs
+    bash bash-completion less man-db \
+    # VCS & downloaders
+    git curl wget ca-certificates gnupg \
+    # Editors
+    vim nano \
+    # General build chain (host: gcc, make, libc headers)
+    build-essential pkg-config autoconf automake libtool cmake ninja-build \
+    # Text-processing utilities (awk family + jq for JSON)
+    gawk mawk jq \
+    # Networking diagnostics: ip/ifconfig, ping, traceroute, netcat, dig, ssh
+    iproute2 iputils-ping traceroute mtr-tiny netcat-openbsd \
+    dnsutils whois tcpdump openssh-client rsync \
+    # Languages: Python, Ruby, Node, Go (Rust installed via rustup below)
+    python3 python3-pip python3-venv pipx \
     ruby \
+    nodejs npm \
     golang-go \
+    # Embedded toolchains:
+    #   gcc-arm-none-eabi  → STM32 / Cortex-M (ESP32-S2/S3 also bare-metal-compatible)
+    #   gcc-avr + avr-libc + avrdude → AVR8 (Arduino, ATtiny, ATmega)
+    gcc-arm-none-eabi binutils-arm-none-eabi libnewlib-arm-none-eabi gdb-multiarch \
+    gcc-avr binutils-avr avr-libc avrdude \
+    # USB / serial flashing helpers used by most MCU toolchains
+    libusb-1.0-0 usbutils minicom picocom screen \
     && rm -rf /var/lib/apt/lists/*
+
+# --- Rust (via rustup) ---------------------------------------------------------
+# Installed system-wide so every shell session sees cargo/rustc without the
+# per-user $HOME/.cargo dance. Pin to stable.
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+      sh -s -- -y --default-toolchain stable --no-modify-path --profile minimal && \
+    rustup target add thumbv7em-none-eabihf && \
+    chmod -R a+rX /usr/local/rustup /usr/local/cargo
+
+# --- ESP-IDF / ESP8266 / ESP32 -------------------------------------------------
+# Espressif's full SDK is large (~2 GB) and version-pinned per project, so we
+# install just the lightweight flasher + toolchain installer that projects can
+# bootstrap on demand. Future: optional FROM-stage with the full IDF.
+RUN pip3 install --no-cache-dir --break-system-packages \
+      esptool \
+      platformio
+
 
 # Ensure /workspace exists so the mount point is always available.
 RUN mkdir -p /workspace
