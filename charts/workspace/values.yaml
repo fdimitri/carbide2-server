@@ -86,3 +86,13 @@ rails:
   # Wide-open by default: all RFC-1918 ranges, localhost, .svc.cluster.local,
   # and the LAN IP of the k3d host. Override per install if you want to tighten.
   devHosts: "localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc.cluster.local,.cluster.local"
+
+# Worker (EventMachine WS server) knobs.
+worker:
+  # Backend used to spawn per-project shells:
+  #   kube   — kubectl exec into a per-project Pod (Dockerfile.shell image)
+  #   docker — legacy: PROJECT_CONTAINERS via host docker socket
+  #   local  — PTY.spawn /bin/bash in the workspace pod itself (no isolation)
+  backend: kube
+  shellImage: carbide2-shell:dev
+  shellImagePullPolicy: IfNotPresent

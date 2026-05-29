@@ -127,6 +127,20 @@ spec:
             - name: RAILS_DEV_HOSTS
               value: {{ .Values.rails.devHosts | quote }}
 
+            # --- Worker shell backend (kube | docker | local) ---
+            - name: CARBIDE_BACKEND
+              value: {{ .Values.worker.backend | quote }}
+            - name: CARBIDE_SHELL_IMAGE
+              value: {{ .Values.worker.shellImage | quote }}
+            - name: CARBIDE_SHELL_PULL_POLICY
+              value: {{ .Values.worker.shellImagePullPolicy | quote }}
+            - name: CARBIDE_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: CARBIDE_PROJECTS_PVC
+              value: {{ include "workspace.fullname" . }}-files
+
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

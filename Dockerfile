@@ -32,6 +32,9 @@ RUN apt-get update -qq && \
       > /etc/apt/sources.list.d/docker.list && \
     apt-get update -qq && \
     apt-get install --no-install-recommends -y docker-ce-cli && \
+    curl -fsSL -o /usr/local/bin/kubectl \
+      "https://dl.k8s.io/release/v1.30.0/bin/linux/$(dpkg --print-architecture)/kubectl" && \
+    chmod 0755 /usr/local/bin/kubectl && \
     rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
 ENV BUNDLE_PATH="/usr/local/bundle"
