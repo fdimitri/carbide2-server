@@ -112,5 +112,5 @@ worker:
 #   defaultUrl: "http://ollama.default.svc.cluster.local:11434/v1"  # in-cluster
 agent:
   defaultUrl:   "http://host.docker.internal:1234/v1"
-  defaultModel: "qwen2.5-coder-14b-instruct"
+  defaultModel: "qwen3-coder-30b-a3b-instruct"
 

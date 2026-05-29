@@ -57,7 +57,7 @@ end
 # Seeds are idempotent (find_or_create_by! on slug).
 # -------------------------------------------------------------------------
 default_agent_url   = ENV.fetch('AGENT_DEFAULT_URL',   'http://host.docker.internal:1234/v1')
-default_agent_model = ENV.fetch('AGENT_DEFAULT_MODEL', 'qwen2.5-coder-14b-instruct')
+default_agent_model = ENV.fetch('AGENT_DEFAULT_MODEL', 'qwen3-coder-30b-a3b-instruct')
 
 Agent.find_or_create_by!(slug: 'coder') do |a|
   a.name          = 'Coder'
