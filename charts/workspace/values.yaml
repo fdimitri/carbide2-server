@@ -66,6 +66,11 @@ ingress:
   pathPrefix: "/w/{{ .Values.projectId }}"
   entryPoints:
     - web
+  # When true, this workspace also claims the root path `/` and routes it to
+  # its Rails service (LandingController#index). Only enable on ONE workspace
+  # per cluster; the chart does not enforce uniqueness. Defaults to true for
+  # dev where there's only ever one workspace.
+  serveRoot: true
 
 # Per-pod env. Anything here is merged into the Deployment's env list verbatim.
 extraEnv: []

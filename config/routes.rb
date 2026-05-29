@@ -1,6 +1,9 @@
 Rails.application.routes.draw do
   devise_for :users
 
+  # Cluster-wide landing page at /. The IngressRoute sends Path(`/`) here.
+  root to: 'landing#index'
+
   namespace :api, defaults: { format: :json } do
     # Authentication endpoints
     post '/login',  to: 'auth#login'
