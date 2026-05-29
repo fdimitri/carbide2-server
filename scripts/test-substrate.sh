@@ -28,7 +28,19 @@ echo "==> [3/4] rails minitest"
 
 echo "==> [4/4] playwright e2e"
 cd "$ROOT/clients/carbide2-client"
+
+# Seed a known user so the login spec has something to authenticate against.
+# Idempotent: find_or_create_by! never raises on re-runs.
+E2E_EMAIL="${CARBIDE_E2E_EMAIL:-e2e@example.com}"
+E2E_PASSWORD="${CARBIDE_E2E_PASSWORD:-password123}"
+kubectl -n "$NAMESPACE" exec deploy/ws-1 -c workspace -- \
+  bundle exec rails runner \
+  "User.find_or_create_by!(email: '${E2E_EMAIL}') { |u| u.password = '${E2E_PASSWORD}' }" \
+  >/dev/null
+
 CARBIDE_WS_URL="${CARBIDE_WS_URL:-$BASE_URL}" \
-  npx playwright test tests/e2e/workspace-smoke.spec.js --reporter=list
+CARBIDE_E2E_EMAIL="$E2E_EMAIL" \
+CARBIDE_E2E_PASSWORD="$E2E_PASSWORD" \
+  npx playwright test tests/e2e/workspace-smoke.spec.js tests/e2e/workspace-login.spec.js --reporter=list
 
 echo "==> All substrate tests passed."

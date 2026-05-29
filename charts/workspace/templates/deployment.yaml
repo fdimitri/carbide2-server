@@ -96,7 +96,7 @@ spec:
                   key: password
 
             # --- JWT ---
-            - name: WORKSPACE_JWT_SECRET
+            - name: WORKER_JWT_SECRET
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.jwt.secretName }}
