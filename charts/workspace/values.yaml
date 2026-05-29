@@ -78,6 +78,10 @@ rails:
   vitePort: 5173
   # EventMachine worker WS port.
   workerPort: 8080
+  # Run db:seed in the migrate init container on every pod start. Idempotent
+  # (db/seeds.rb uses find_or_create_by!). Default true for dev so a fresh
+  # cluster comes up with a known user + Demo Project + sample VFS files.
+  seedOnStart: true
   # Comma-separated host allowlist injected into config.hosts for development.
   # Wide-open by default: all RFC-1918 ranges, localhost, .svc.cluster.local,
   # and the LAN IP of the k3d host. Override per install if you want to tighten.

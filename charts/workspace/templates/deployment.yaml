@@ -25,10 +25,23 @@ spec:
         - name: migrate
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["bundle", "exec", "rails", "db:migrate"]
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              bundle exec rails db:migrate
+              case "${RAILS_SEED_ON_START:-0}" in
+                1|true|TRUE|yes)
+                  echo "[init] db:seed (RAILS_SEED_ON_START=${RAILS_SEED_ON_START})"
+                  bundle exec rails db:seed
+                  ;;
+              esac
           env:
             - name: SKIP_DB_PREPARE
               value: "1"
+            - name: RAILS_SEED_ON_START
+              value: {{ .Values.rails.seedOnStart | default false | quote }}
             - name: RAILS_ENV
               value: {{ .Values.rails.env }}
             - name: POSTGRES_HOST
