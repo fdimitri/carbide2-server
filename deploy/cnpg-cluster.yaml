@@ -1,0 +1,37 @@
+# Shared Postgres for the carbide2 control plane and all workspace databases.
+# One CNPG Cluster, many logical databases (created on demand by control plane).
+#
+# Sizing: dev defaults. Tune storage.size and resources for real deployments.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: carbide-system
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: carbide-pg
+  namespace: carbide-system
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.4
+  storage:
+    size: 5Gi
+    storageClass: local-path
+  postgresql:
+    parameters:
+      max_connections: "200"
+      shared_buffers: "256MB"
+  bootstrap:
+    initdb:
+      database: carbide_control
+      owner: carbide
+      # CNPG generates the password automatically and stores it in a Secret
+      # named "<cluster>-app" (here: carbide-pg-app).
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "200m"
+    limits:
+      memory: "1Gi"
+      cpu: "1"

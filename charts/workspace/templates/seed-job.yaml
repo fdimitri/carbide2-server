@@ -1,0 +1,74 @@
+{{/*
+Seed a Project row so the worker has something to attach FS entries to.
+Uses Helm pre-install + pre-upgrade hooks so it runs after the initContainer
+migration would have established the schema (the deployment also has a
+migrate initContainer, but Job-driven migrate + seed gives us a single
+source-of-truth and lets us delete the deployment's initContainer later).
+
+Idempotent: find_or_create_by on project_id.
+*/}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "workspace.fullname" . }}-seed-{{ .Release.Revision }}
+  labels:
+    {{- include "workspace.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "workspace.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: seed
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - bundle
+            - exec
+            - rails
+            - runner
+            - |
+              pid = Integer(ENV.fetch('WORKSPACE_PROJECT_ID'))
+              proj = Project.find_or_initialize_by(id: pid)
+              if proj.new_record?
+                proj.name = "workspace-#{pid}"
+                proj.save!
+                puts "[seed] created project #{proj.id}: #{proj.name}"
+              else
+                puts "[seed] project #{proj.id} already exists: #{proj.name}"
+              end
+              proj.ensure_project_setting! if proj.respond_to?(:ensure_project_setting!)
+              puts "[seed] root_path: #{proj.project_setting&.root_path}"
+          env:
+            - name: SKIP_DB_PREPARE
+              value: "1"
+            - name: WORKSPACE_PROJECT_ID
+              value: {{ .Values.projectId | quote }}
+            - name: PROJECTS_ROOT
+              value: /srv/projects
+            - name: RAILS_ENV
+              value: {{ .Values.rails.env }}
+            - name: POSTGRES_HOST
+              value: {{ .Values.postgres.clusterName }}-rw.{{ .Values.postgres.clusterNamespace }}.svc.cluster.local
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              value: {{ include "workspace.databaseName" . }}
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.credentialsSecret }}
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.credentialsSecret }}
+                  key: password

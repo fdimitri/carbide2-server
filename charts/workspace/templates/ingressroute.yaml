@@ -1,0 +1,49 @@
+{{- if .Values.ingress.enabled -}}
+{{- $prefix := include "workspace.pathPrefix" . -}}
+{{- $hostExpr := "" -}}
+{{- if .Values.ingress.host -}}
+  {{- $hostExpr = printf "Host(`%s`) && " .Values.ingress.host -}}
+{{- end -}}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "workspace.fullname" . }}-strip
+  labels:
+    {{- include "workspace.labels" . | nindent 4 }}
+spec:
+  stripPrefix:
+    prefixes:
+      - {{ $prefix | quote }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ include "workspace.fullname" . }}
+  labels:
+    {{- include "workspace.labels" . | nindent 4 }}
+spec:
+  entryPoints:
+    {{- toYaml .Values.ingress.entryPoints | nindent 4 }}
+  routes:
+    - match: {{ printf "%sPathPrefix(`%s/ws`)" $hostExpr $prefix | quote }}
+      kind: Rule
+      services:
+        - name: {{ include "workspace.fullname" . }}
+          port: worker
+      middlewares:
+        - name: {{ include "workspace.fullname" . }}-strip
+    - match: {{ printf "%s(PathPrefix(`%s/@vite`) || PathPrefix(`%s/@id`) || PathPrefix(`%s/src`) || PathPrefix(`%s/node_modules`))" $hostExpr $prefix $prefix $prefix $prefix | quote }}
+      kind: Rule
+      services:
+        - name: {{ include "workspace.fullname" . }}
+          port: vite
+      middlewares:
+        - name: {{ include "workspace.fullname" . }}-strip
+    - match: {{ printf "%sPathPrefix(`%s`)" $hostExpr $prefix | quote }}
+      kind: Rule
+      services:
+        - name: {{ include "workspace.fullname" . }}
+          port: rails
+      middlewares:
+        - name: {{ include "workspace.fullname" . }}-strip
+{{- end }}

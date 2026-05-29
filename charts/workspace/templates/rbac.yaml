@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "workspace.fullname" . }}
+  labels:
+    {{- include "workspace.labels" . | nindent 4 }}
+---
+# Namespace-scoped RBAC: the workspace process needs to spawn shell containers
+# (currently as Docker via socket; will switch to k8s Pods in a later commit).
+# Wiring it up here so the move to Pod-based shells is a code-only change.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "workspace.fullname" . }}-shell
+  labels:
+    {{- include "workspace.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "workspace.fullname" . }}-shell
+  labels:
+    {{- include "workspace.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "workspace.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "workspace.fullname" . }}-shell

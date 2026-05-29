@@ -1,0 +1,19 @@
+# Workspace DB on the shared CNPG cluster. CNPG creates the database and grants
+# ownership to the cluster's bootstrap user (whose credentials live in
+# secret/<cluster>-app, which we reference from the Deployment).
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: {{ include "workspace.fullname" . }}-db
+  namespace: {{ .Values.postgres.clusterNamespace }}
+  labels:
+    {{- include "workspace.labels" . | nindent 4 }}
+spec:
+  name: {{ include "workspace.databaseName" . }}
+  owner: carbide
+  cluster:
+    name: {{ .Values.postgres.clusterName }}
+  # Reclaim policy: "retain" means deleting this Database CR does NOT drop the
+  # underlying DB. Safer default; control plane will switch to "delete" when
+  # archiving a project explicitly.
+  databaseReclaimPolicy: retain

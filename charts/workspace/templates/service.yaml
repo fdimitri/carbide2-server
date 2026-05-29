@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "workspace.fullname" . }}
+  labels:
+    {{- include "workspace.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "workspace.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: rails
+      port: {{ .Values.rails.port }}
+      targetPort: rails
+    - name: worker
+      port: {{ .Values.rails.workerPort }}
+      targetPort: worker
+    - name: vite
+      port: {{ .Values.rails.vitePort }}
+      targetPort: vite

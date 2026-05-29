@@ -1,0 +1,76 @@
+# charts/workspace — per-project workspace deployment.
+#
+# Install:
+#   helm upgrade --install ws-1 charts/workspace \
+#     -n ws-1 --create-namespace \
+#     --set projectId=1
+#
+# Required cluster-wide state (provisioned by scripts/dev-cluster.sh):
+#   - CNPG operator running
+#   - CNPG Cluster "carbide-pg" in namespace "carbide-system"
+#   - Traefik installed with IngressRoute CRDs
+#   - StorageClass "local-path" (or override storageClassName)
+
+projectId: 1
+
+image:
+  repository: carbide2
+  tag: dev
+  pullPolicy: IfNotPresent
+
+# Resources for the workspace pod.
+resources:
+  requests:
+    memory: "512Mi"
+    cpu: "200m"
+  limits:
+    memory: "1Gi"
+    cpu: "1"
+
+# Project filesystem PVC. Mounted at /srv/projects/<projectId> inside the pod.
+storage:
+  size: 1Gi
+  storageClassName: local-path
+
+# Shared Postgres cluster (CNPG). Each workspace owns one logical DB on it.
+postgres:
+  clusterName: carbide-pg
+  clusterNamespace: carbide-system
+  # CNPG creates the cluster owner secret as "<clusterName>-app" by default.
+  # It contains username/password for the bootstrap user; we reuse it for
+  # workspace DB connections (the workspace DB is owned by the same user).
+  credentialsSecret: carbide-pg-app
+  # Workspace DB name. Defaults to "carbide_workspace_<projectId>".
+  databaseName: ""
+
+# JWT secret. In production this is mirrored into the workspace namespace by
+# the control plane at provision time. For dev, helm generates it on first
+# install via the lookup() function in templates/jwt-secret.yaml.
+jwt:
+  secretName: workspace-jwt
+  # If you want to pin the secret value across re-installs, set this. Otherwise
+  # the chart generates a random one and stores it in the Secret.
+  secret: ""
+
+ingress:
+  enabled: true
+  # Host can be left empty for path-only matching (works with curl --header
+  # 'Host: anything' or by hitting the LB IP directly).
+  host: ""
+  # Path prefix the workspace is mounted under. The stripprefix middleware
+  # removes this before forwarding to the pod.
+  pathPrefix: "/w/{{ .Values.projectId }}"
+  entryPoints:
+    - web
+
+# Per-pod env. Anything here is merged into the Deployment's env list verbatim.
+extraEnv: []
+
+# Rails-side knobs.
+rails:
+  env: development
+  port: 3000
+  # Vite dev server (kept in-pod for dev mode; will be split out in prod).
+  vitePort: 5173
+  # EventMachine worker WS port.
+  workerPort: 8080
