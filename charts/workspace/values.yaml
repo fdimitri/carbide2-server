@@ -101,3 +101,16 @@ worker:
   backend: kube
   shellImage: carbide2-shell:dev
   shellImagePullPolicy: IfNotPresent
+
+# Agent (LLM) defaults applied at db:seed time to the Agents table. These
+# only seed initial rows; admins can edit Agent rows at runtime to point
+# different agents at different model servers.
+#
+# For local dev with LM Studio on the host machine, set defaultUrl to your
+# host's LAN IP (k3d nodes can't resolve host.docker.internal). Examples:
+#   defaultUrl: "http://192.168.1.10:1234/v1"   # LM Studio
+#   defaultUrl: "http://ollama.default.svc.cluster.local:11434/v1"  # in-cluster
+agent:
+  defaultUrl:   "http://host.docker.internal:1234/v1"
+  defaultModel: "qwen2.5-coder-14b-instruct"
+

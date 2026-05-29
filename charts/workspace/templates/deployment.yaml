@@ -42,6 +42,14 @@ spec:
               value: "1"
             - name: RAILS_SEED_ON_START
               value: {{ .Values.rails.seedOnStart | default false | quote }}
+            # Seed-time defaults for the Agents table (db:seed reads these).
+            # Override per-cluster to point at your LM Studio / llama.cpp /
+            # Ollama instance. Inside k3d the host is reachable via the LAN
+            # IP of the host machine.
+            - name: AGENT_DEFAULT_URL
+              value: {{ .Values.agent.defaultUrl | quote }}
+            - name: AGENT_DEFAULT_MODEL
+              value: {{ .Values.agent.defaultModel | quote }}
             - name: RAILS_ENV
               value: {{ .Values.rails.env }}
             - name: POSTGRES_HOST
