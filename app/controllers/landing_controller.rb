@@ -1,17 +1,13 @@
-# Tiny landing page served at /. Lists known workspaces with a link into
-# each one. This Rails app is itself part of workspace 1; future deployments
-# may move this into a dedicated control-plane service, but for now a single
-# inline HTML response is enough to stop / from returning 404.
+# Tiny landing page served at /. Intentionally does NOT enumerate
+# workspaces — that would leak which workspaces exist on the cluster to
+# unauthenticated visitors. The real per-user dashboard (list of
+# workspaces the requesting user belongs to, behind auth) is a TODO; see
+# the open design questions in chat for May 29 2026.
+#
+# For now: a single link into /w/1/ where the existing SPA login takes
+# over. Once a real dashboard exists, swap the body for a redirect to it.
 class LandingController < ActionController::Base
   def index
-    workspaces = [
-      { id: 1, name: 'Workspace 1', path: '/w/1/' },
-    ]
-
-    rows = workspaces.map { |w|
-      %(<li><a href="#{w[:path]}">#{ERB::Util.h(w[:name])}</a> <span class="muted">#{w[:path]}</span></li>)
-    }.join("\n")
-
     html = <<~HTML
       <!doctype html>
       <html lang="en">
@@ -22,20 +18,16 @@ class LandingController < ActionController::Base
             body { font-family: system-ui, sans-serif; background: #1e1e1e; color: #ddd;
                    margin: 0; padding: 3rem; }
             h1   { font-weight: 300; letter-spacing: 0.02em; }
-            ul   { list-style: none; padding: 0; }
-            li   { padding: 0.5rem 0; }
             a    { color: #6cb6ff; text-decoration: none; font-size: 1.1rem; }
             a:hover { text-decoration: underline; }
-            .muted { color: #777; font-size: 0.85rem; margin-left: 0.5rem; }
+            .muted { color: #777; font-size: 0.85rem; margin-top: 2rem; }
             footer { margin-top: 3rem; color: #555; font-size: 0.8rem; }
           </style>
         </head>
         <body>
           <h1>Carbide2</h1>
-          <p>Available workspaces:</p>
-          <ul>
-            #{rows}
-          </ul>
+          <p><a href="/w/1/">Enter workspace &rarr;</a></p>
+          <p class="muted">A real per-user dashboard is coming. For now, sign in inside the workspace.</p>
           <footer>carbide2-server &middot; #{ERB::Util.h(Rails.env)}</footer>
         </body>
       </html>
@@ -44,3 +36,4 @@ class LandingController < ActionController::Base
     render html: html.html_safe
   end
 end
+
