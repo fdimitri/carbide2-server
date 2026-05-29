@@ -100,11 +100,18 @@ class DirectoryEntry < ApplicationRecord
     )
 
     if data && !data.empty?
+      # Treat incoming bytes as UTF-8 and only scrub sequences that are
+      # actually invalid. Calling .encode('UTF-8', replace: '') on an
+      # ASCII-8BIT string strips every byte >= 0x80 — i.e. every multi-byte
+      # UTF-8 char (en-dashes, em-dashes, smart quotes, accents). See the
+      # matching fix in app/services/fs_loader.rb.
+      data = data.dup.force_encoding('UTF-8')
+      data = data.scrub('') unless data.valid_encoding?
       FileChange.create!(
         directory_entry_id: entry.id,
         user_id:            user_id || 1,
         change_type:        'setContents',
-        change_data:        data.encode('UTF-8', invalid: :replace, undef: :replace, replace: ''),
+        change_data:        data,
         start_line:         0,
         start_char:         0,
         revision:           0

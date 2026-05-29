@@ -111,14 +111,20 @@ class FsLoader
       return
     end
 
-    content = File.read(disk_path, encoding: 'binary')
+    content = File.read(disk_path, mode: 'rb')
     if content[0, 8192].include?("\x00")
       @stats[:skipped] += 1
       log "  skip (binary): #{srcpath}"
       return
     end
 
-    content = content.encode('UTF-8', invalid: :replace, undef: :replace, replace: '')
+    # Interpret bytes as UTF-8 and only drop sequences that are actually
+    # invalid UTF-8. The previous .encode('UTF-8', ...) call treated the
+    # ASCII-8BIT source as encoding-less and replaced EVERY byte >= 0x80
+    # with '', which silently stripped en-dashes (–), em-dashes (—),
+    # smart quotes, accents, etc. — even from valid UTF-8 source files.
+    content.force_encoding('UTF-8')
+    content = content.scrub('') unless content.valid_encoding?
 
     parent_path = File.dirname(srcpath)
     parent      = DirectoryEntry.find_by_project_and_path(@project_id, parent_path)
