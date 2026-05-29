@@ -1,0 +1,88 @@
+name: substrate-tests
+
+on:
+  push:
+    branches: [main, k8s-split-phase1]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  substrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install k3d
+        run: |
+          curl -sfL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.7.4 bash
+          k3d version
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.30.0
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.15.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: clients/carbide2-client/package-lock.json
+
+      - name: Install Playwright deps
+        working-directory: clients/carbide2-client
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Bring up dev cluster
+        run: ./scripts/dev-cluster.sh
+
+      - name: Build workspace image
+        run: docker build -t carbide2:dev .
+
+      - name: Import image into k3d
+        run: k3d image import carbide2:dev -c carbide-dev
+
+      - name: Install workspace chart (ws-1)
+        run: |
+          helm upgrade --install ws-1 charts/workspace \
+            -n ws-1 --create-namespace \
+            --set projectId=1
+          kubectl -n ws-1 rollout status deploy/ws-1 --timeout=5m
+
+      - name: Wait for /up via Traefik
+        run: |
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: localhost' http://localhost:8080/w/1/up || true)
+            echo "attempt $i -> $code"
+            [ "$code" = "200" ] && exit 0
+            sleep 2
+          done
+          echo "workspace did not become healthy"
+          kubectl -n ws-1 get pods
+          kubectl -n ws-1 logs deploy/ws-1 --tail=200 || true
+          exit 1
+
+      - name: Run substrate test orchestrator
+        env:
+          NAMESPACE: ws-1
+          BASE_URL: http://localhost:8080/w/1
+          CARBIDE_WS_URL: http://localhost:8080/w/1
+        run: ./scripts/test-substrate.sh
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl get nodes -o wide || true
+          kubectl get pods -A || true
+          kubectl -n ws-1 describe pods || true
+          kubectl -n ws-1 logs deploy/ws-1 --tail=300 || true
+          kubectl -n ws-1 logs ws-1-test-smoke --tail=100 || true
+          kubectl -n carbide-system get cluster,pods || true

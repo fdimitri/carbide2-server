@@ -20,5 +20,5 @@ POD="$(kubectl -n "$NS" get pod -l app.kubernetes.io/name=workspace \
 
 echo "Running Rails tests in $NS/$POD …"
 kubectl -n "$NS" exec "$POD" -c workspace -- \
-  sh -c "cd /app && RAILS_ENV=test bundle exec rails db:prepare && \
+  sh -c "cd /app && RAILS_ENV=test bundle exec rails db:drop db:create db:migrate && \
          RAILS_ENV=test bundle exec rails test $*"

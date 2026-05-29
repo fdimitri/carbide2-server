@@ -1,5 +1,8 @@
 {{- /*
-  Helm test pod for workspace chart: curl /up and /
+  Helm test pod for workspace chart: curl /up and / via Traefik so the
+  request goes through the chart's IngressRoute (mirrors how real clients
+  reach the workspace). Hitting the Service directly trips Rails 8's host
+  authorization (403).
 */}}
 apiVersion: v1
 kind: Pod
@@ -18,6 +21,9 @@ spec:
       args:
         - |
           set -e
-          echo "[test] /up" && curl -fsSL http://ws-{{ .Values.projectId }}:3000/up | grep OK
-          echo "[test] /" && curl -fsSL http://ws-{{ .Values.projectId }}:3000/ | grep 'Ruby on Rails'
+          URL="http://traefik.traefik.svc.cluster.local{{ include "workspace.pathPrefix" . }}"
+          echo "[test] $URL/up"
+          curl -fsSL -H 'Host: localhost' "$URL/up" | grep -q 'background-color: green'
+          echo "[test] $URL/"
+          curl -fsSL -H 'Host: localhost' "$URL/" | grep -q 'Ruby on Rails'
           echo "[test] done"

@@ -1,7 +1,9 @@
 .env
 tmp/*
 log/*
-.github
+.github/*
+!.github/workflows/
+!.github/copilot-instructions.md
 *.lock
 db/*sqlite3*
 
