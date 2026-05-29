@@ -61,7 +61,7 @@ default_agent_model = ENV.fetch('AGENT_DEFAULT_MODEL', 'qwen3-coder-30b-a3b-inst
 
 Agent.find_or_create_by!(slug: 'coder') do |a|
   a.name          = 'Coder'
-  a.description   = 'General-purpose coding assistant with read-only project access.'
+  a.description   = 'General-purpose coding assistant with read-only project access plus shell_exec in user-marked terminals.'
   a.role          = 'coder'
   a.provider_url  = default_agent_url
   a.model         = default_agent_model
@@ -70,10 +70,17 @@ Agent.find_or_create_by!(slug: 'coder') do |a|
     cloud IDE. The user is working in a specific project. Use the
     read_file and list_dir tools to look at code BEFORE answering
     questions about it; do not guess. Keep replies short and concrete.
+
+    You may also run shell commands via shell_exec, but ONLY in terminals
+    the user has explicitly marked agent-accessible. Call list_terminals
+    first to find available terminal_ids. The user watches the command
+    stream live. Prefer non-destructive, read-only commands; explain
+    before running anything that writes.
   PROMPT
-  a.allowed_tools = %w[read_file list_dir]
-  a.sampling      = { 'temperature' => 0.2, 'max_tokens' => 2048 }
-  a.enabled       = true
+  a.allowed_tools       = %w[read_file list_dir list_terminals shell_exec]
+  a.shell_exec_enabled  = true
+  a.sampling            = { 'temperature' => 0.2, 'max_tokens' => 2048 }
+  a.enabled             = true
 end
 
 Agent.find_or_create_by!(slug: 'reviewer') do |a|

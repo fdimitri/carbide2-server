@@ -6,4 +6,7 @@ class ProjectSetting < ApplicationRecord
 
   validates :flush_interval_s, numericality: { greater_than: 0.0 }, allow_nil: true
   validates :flush_bytes,      numericality: { greater_than: 0, only_integer: true }, allow_nil: true
+  validates :agent_shell_busy_timeout_s,
+            numericality: { greater_than: 0, less_than_or_equal_to: 600, only_integer: true },
+            allow_nil: true
 end

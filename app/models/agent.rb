@@ -56,4 +56,13 @@ class Agent < ApplicationRecord
     return nil if api_key.blank?
     "Bearer #{api_key}"
   end
+
+  # True if this agent may use the shell_exec tool. The two-layer gate
+  # (this flag AND allowed_tools containing 'shell_exec') is intentional —
+  # the column makes the dangerous capability auditable as a single bool,
+  # while allowed_tools controls which subset is exposed in any given
+  # request.
+  def shell_exec_allowed?
+    !!shell_exec_enabled && allowed_tool_slugs.include?('shell_exec')
+  end
 end
