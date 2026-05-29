@@ -29,6 +29,8 @@ Rails.application.routes.draw do
           post   'dirs',    action: :create_dir
           patch  'rename',  action: :rename
           delete 'entry',   action: :destroy_entry
+          post   'upload',  action: :upload
+          post   'import',  action: :import_from_disk
         end
       end
     end

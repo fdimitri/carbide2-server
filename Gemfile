@@ -49,6 +49,10 @@ gem 'eventmachine'
 gem 'em-websocket'
 gem 'rb-inotify'
 
+# Archive extraction for file upload endpoint
+gem 'rubyzip', require: 'zip'
+gem 'minitar'
+
 # Process supervisor for multi-process container (Rails + worker + Vite)
 gem 'foreman'
 

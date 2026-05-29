@@ -77,6 +77,55 @@ class Api::DirectoryEntriesController < Api::BaseController
     head :no_content
   end
 
+  # POST /api/projects/:project_id/fs/upload
+  # multipart/form-data:
+  #   file:        (required) uploaded file; .zip/.tar/.tar.gz/.tgz are extracted, anything else stored as-is
+  #   dest:        (optional) destination directory inside the project tree; defaults to '/'
+  def upload
+    uploaded = params[:file]
+    if uploaded.blank? || !uploaded.respond_to?(:read)
+      return render json: { error: 'file is required (multipart upload)' }, status: :unprocessable_entity
+    end
+
+    dest = params[:dest].presence || '/'
+    importer = ArchiveImporter.new(
+      project:   @project,
+      user_id:   @current_user_id,
+      dest_path: dest,
+      filename:  uploaded.original_filename
+    )
+    result = importer.import!(uploaded.tempfile.tap(&:rewind))
+
+    render json: {
+      dest:     dest,
+      filename: uploaded.original_filename,
+      files:    result.files,
+      dirs:     result.dirs,
+      skipped:  result.skipped,
+      errors:   result.errors
+    }
+  end
+
+  # POST /api/projects/:project_id/fs/import
+  # body: { path: '/optional/absolute/host/path' }
+  # When path is omitted, imports from the project's configured root_path.
+  # Wraps FsLoader; existing entries with FileChanges are skipped (DB wins).
+  def import_from_disk
+    root_path = params[:path].presence || @project.project_setting&.root_path || @project.default_root_path
+    unless Dir.exist?(root_path)
+      return render json: { error: "directory not found: #{root_path}" }, status: :unprocessable_entity
+    end
+
+    stats = FsLoader.new(
+      project_id: @project.id,
+      root_path:  root_path,
+      user_id:    @current_user_id,
+      verbose:    false
+    ).load!
+
+    render json: { root_path: root_path, **stats }
+  end
+
   private
 
   def load_project
