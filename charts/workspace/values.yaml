@@ -57,6 +57,10 @@ ingress:
   # Host can be left empty for path-only matching (works with curl --header
   # 'Host: anything' or by hitting the LB IP directly).
   host: ""
+  # External port the browser reaches Traefik on. Used to tell Vite's HMR
+  # client which port to connect back to (the dev k3d cluster maps host
+  # :8080 -> Traefik :80, so the browser loads pages from :8080).
+  publicPort: 8080
   # Path prefix the workspace is mounted under. The stripprefix middleware
   # removes this before forwarding to the pod.
   pathPrefix: "/w/{{ .Values.projectId }}"
@@ -74,3 +78,7 @@ rails:
   vitePort: 5173
   # EventMachine worker WS port.
   workerPort: 8080
+  # Comma-separated host allowlist injected into config.hosts for development.
+  # Wide-open by default: all RFC-1918 ranges, localhost, .svc.cluster.local,
+  # and the LAN IP of the k3d host. Override per install if you want to tighten.
+  devHosts: "localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc.cluster.local,.cluster.local"

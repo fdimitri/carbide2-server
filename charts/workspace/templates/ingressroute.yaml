@@ -32,18 +32,21 @@ spec:
           port: worker
       middlewares:
         - name: {{ include "workspace.fullname" . }}-strip
-    - match: {{ printf "%s(PathPrefix(`%s/@vite`) || PathPrefix(`%s/@id`) || PathPrefix(`%s/src`) || PathPrefix(`%s/node_modules`))" $hostExpr $prefix $prefix $prefix $prefix | quote }}
-      kind: Rule
-      services:
-        - name: {{ include "workspace.fullname" . }}
-          port: vite
-      middlewares:
-        - name: {{ include "workspace.fullname" . }}-strip
-    - match: {{ printf "%sPathPrefix(`%s`)" $hostExpr $prefix | quote }}
+    - match: {{ printf "%s(PathPrefix(`%s/api`) || Path(`%s/up`) || PathPrefix(`%s/rails`) || PathPrefix(`%s/assets`))" $hostExpr $prefix $prefix $prefix $prefix | quote }}
       kind: Rule
       services:
         - name: {{ include "workspace.fullname" . }}
           port: rails
       middlewares:
         - name: {{ include "workspace.fullname" . }}-strip
+    # Everything else (SPA root + Vite client paths: /@vite, /@id, /src,
+    # /node_modules, HMR ws, etc.) goes to the Vite dev server. We do NOT
+    # strip the prefix here: Vite is configured with base=/w/<id>/ so it
+    # both serves and rewrites URLs under that path. Stripping would break
+    # asset URL resolution.
+    - match: {{ printf "%sPathPrefix(`%s`)" $hostExpr $prefix | quote }}
+      kind: Rule
+      services:
+        - name: {{ include "workspace.fullname" . }}
+          port: vite
 {{- end }}

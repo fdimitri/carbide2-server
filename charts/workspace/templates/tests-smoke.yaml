@@ -25,5 +25,5 @@ spec:
           echo "[test] $URL/up"
           curl -fsSL -H 'Host: localhost' "$URL/up" | grep -q 'background-color: green'
           echo "[test] $URL/"
-          curl -fsSL -H 'Host: localhost' "$URL/" | grep -q 'Ruby on Rails'
+          curl -fsSL -H 'Host: localhost' "$URL/" | grep -q 'Carbide2 IDE'
           echo "[test] done"

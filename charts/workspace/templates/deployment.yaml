@@ -102,6 +102,18 @@ spec:
                   name: {{ .Values.jwt.secretName }}
                   key: secret
 
+            # --- Vite (served behind the ingress, NOT stripped) ---
+            - name: VITE_BASE
+              value: {{ printf "%s/" (include "workspace.pathPrefix" .) | quote }}
+            - name: VITE_HMR_CLIENT_PORT
+              value: {{ .Values.ingress.publicPort | quote }}
+            - name: VITE_API_PROXY
+              value: "http://127.0.0.1:{{ .Values.rails.port }}"
+
+            # --- Rails host allowlist (LAN + cluster DNS + ingress host) ---
+            - name: RAILS_DEV_HOSTS
+              value: {{ .Values.rails.devHosts | quote }}
+
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
