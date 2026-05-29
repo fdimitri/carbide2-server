@@ -1,15 +1,19 @@
 # Enforce NOT NULL on projects.user_id; backfill any legacy rows first.
-# Requires at least one user to exist; if the users table is empty the migration
-# will leave orphaned rows attached to user 1 (acceptable for a dev-only DB).
+# If there are no projects yet, just flip the constraint — there is nothing
+# to backfill. If projects exist but no users do, fail loudly: the dev DB
+# is inconsistent.
 class EnforceProjectsUserIdNotNull < ActiveRecord::Migration[8.1]
   def up
-    # Backfill any rows created before the NOT NULL constraint was added.
-    first_user_id = connection.select_value('SELECT MIN(id) FROM users').to_i
-    raise "No users exist — cannot backfill projects.user_id" if first_user_id.zero?
+    pending = connection.select_value('SELECT COUNT(*) FROM projects WHERE user_id IS NULL').to_i
 
-    execute <<~SQL
-      UPDATE projects SET user_id = #{first_user_id} WHERE user_id IS NULL
-    SQL
+    if pending > 0
+      first_user_id = connection.select_value('SELECT MIN(id) FROM users').to_i
+      raise "No users exist — cannot backfill projects.user_id" if first_user_id.zero?
+
+      execute <<~SQL
+        UPDATE projects SET user_id = #{first_user_id} WHERE user_id IS NULL
+      SQL
+    end
 
     change_column_null :projects, :user_id, false
   end

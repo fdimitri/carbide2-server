@@ -17,3 +17,20 @@ spec:
   # underlying DB. Safer default; control plane will switch to "delete" when
   # archiving a project explicitly.
   databaseReclaimPolicy: retain
+---
+# Separate test DB so `RAILS_ENV=test` migrations and Rails minitest don't
+# touch the dev DB. The app user cannot CREATE DATABASE on the cluster, so
+# we provision it here via CNPG.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: {{ include "workspace.fullname" . }}-db-test
+  namespace: {{ .Values.postgres.clusterNamespace }}
+  labels:
+    {{- include "workspace.labels" . | nindent 4 }}
+spec:
+  name: {{ include "workspace.testDatabaseName" . }}
+  owner: carbide
+  cluster:
+    name: {{ .Values.postgres.clusterName }}
+  databaseReclaimPolicy: delete

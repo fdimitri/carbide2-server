@@ -28,6 +28,13 @@ spec:
       owner: carbide
       # CNPG generates the password automatically and stores it in a Secret
       # named "<cluster>-app" (here: carbide-pg-app).
+      postInitApplicationSQL:
+        # Dev substrate only: let the app role create/drop its own databases
+        # and disable referential integrity during Rails fixture loads. This
+        # is acceptable on the single-node dev cluster but MUST be removed
+        # for a multi-tenant/production deployment.
+        - ALTER ROLE carbide CREATEDB
+        - ALTER ROLE carbide SUPERUSER
   resources:
     requests:
       memory: "512Mi"

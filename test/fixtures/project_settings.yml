@@ -1,0 +1,2 @@
+# empty — Project.after_create creates rows here; listing the table as a
+# fixture file tells Rails to truncate it between tests.

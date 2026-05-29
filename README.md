@@ -1,3 +1,20 @@
+## Substrate smoke tests
+
+To verify the k8s substrate end-to-end:
+
+### Bash smoke test
+	scripts/smoke-test.sh
+
+### Playwright E2E (from client dir)
+	cd clients/carbide2-client && npx playwright test tests/e2e/workspace-smoke.spec.js
+
+### Helm chart test
+	helm test ws-1 -n ws-1
+
+### Rails minitest (in pod)
+	scripts/test-rails.sh ws-1
+
+All should pass with a clean substrate install.
 # Carbide2 IDE Server
 
 A collaborative development environment with browser-based terminal emulation, built with Ruby on Rails and Vue 3.

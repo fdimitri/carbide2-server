@@ -26,6 +26,10 @@ carbide_workspace_{{ .Values.projectId }}
 {{- end -}}
 {{- end -}}
 
+{{- define "workspace.testDatabaseName" -}}
+{{ include "workspace.databaseName" . }}_test
+{{- end -}}
+
 {{- define "workspace.pathPrefix" -}}
 {{ tpl .Values.ingress.pathPrefix . }}
 {{- end -}}

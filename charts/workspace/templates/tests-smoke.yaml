@@ -1,0 +1,23 @@
+{{- /*
+  Helm test pod for workspace chart: curl /up and /
+*/}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "workspace.fullname" . }}-test-smoke
+  labels:
+    {{- include "workspace.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+spec:
+  restartPolicy: Never
+  containers:
+    - name: curl
+      image: curlimages/curl:8.7.1
+      command: ["sh", "-c"]
+      args:
+        - |
+          set -e
+          echo "[test] /up" && curl -fsSL http://ws-{{ .Values.projectId }}:3000/up | grep OK
+          echo "[test] /" && curl -fsSL http://ws-{{ .Values.projectId }}:3000/ | grep 'Ruby on Rails'
+          echo "[test] done"

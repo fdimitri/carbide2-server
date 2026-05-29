@@ -74,6 +74,7 @@ spec:
             - name: PROJECTS_ROOT
               value: /srv/projects
 
+
             # --- Postgres (CNPG) ---
             - name: POSTGRES_HOST
               value: {{ .Values.postgres.clusterName }}-rw.{{ .Values.postgres.clusterNamespace }}.svc.cluster.local
@@ -81,6 +82,8 @@ spec:
               value: "5432"
             - name: POSTGRES_DB
               value: {{ include "workspace.databaseName" . }}
+            - name: POSTGRES_DB_TEST
+              value: {{ include "workspace.testDatabaseName" . }}
             - name: POSTGRES_USER
               valueFrom:
                 secretKeyRef:
