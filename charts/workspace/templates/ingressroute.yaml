@@ -50,10 +50,10 @@ spec:
         - name: {{ include "workspace.fullname" . }}
           port: vite
 {{- if .Values.ingress.serveRoot }}
-    # Cluster-wide landing page at `/`. Routed to this workspace's Rails
-    # (LandingController#index). No strip middleware — Rails sees the URL
-    # as-is. Only one workspace per cluster should set serveRoot=true.
-    - match: {{ printf "%sPath(`/`)" $hostExpr | quote }}
+    # Cluster-wide landing page at `/` and `/about`, plus root-level static
+    # assets served from Rails public/. No strip middleware — Rails sees the URL as-is.
+    # Only one workspace per cluster should set serveRoot=true.
+    - match: {{ printf "%s(Path(`/`) || Path(`/about`) || Path(`/landing.css`) || Path(`/favicon.ico`) || Path(`/robots.txt`))" $hostExpr | quote }}
       kind: Rule
       services:
         - name: {{ include "workspace.fullname" . }}
