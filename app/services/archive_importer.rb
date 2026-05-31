@@ -25,6 +25,11 @@ class ArchiveImporter
     @result    = Result.new(files: 0, dirs: 0, skipped: 0, errors: [])
     @total     = 0
     @count     = 0
+    # Project's on-disk root, used so binary uploads can land straight on the
+    # VFS without going through the (text-only) FileChange replay path.
+    # nil when the project has no configured root yet.
+    setting    = project.project_setting
+    @root_path = (setting&.root_path.presence || project.default_root_path).to_s.chomp('/').presence
   end
 
   # Decide format from filename and extract from an open IO.
@@ -105,6 +110,31 @@ class ArchiveImporter
     return skip("zip-slip rejected: #{target}") unless target.start_with?(@dest_path == '/' ? '/' : @dest_path + '/') || target == @dest_path
     @total += data.bytesize
     return skip("total size limit exceeded") if @total > MAX_TOTAL_BYTES
+
+    # Decide binary vs text by null-byte check on the first 8 KB (same heuristic
+    # FsLoader uses). Binary content is written straight to disk and tracked
+    # as a DBFS entry with no FileChange (see #13 in May30-Questions.md).
+    head      = data.byteslice(0, 8192) || ''
+    is_binary = head.b.include?("\x00".b)
+
+    if is_binary
+      if @root_path && Dir.exist?(@root_path)
+        disk_path = File.join(@root_path, target.sub(%r{\A/}, ''))
+        FileUtils.mkdir_p(File.dirname(disk_path))
+        File.binwrite(disk_path, data)
+      end
+      DirectoryEntry.create_file!(
+        project_id: @project.id,
+        srcpath:    target,
+        user_id:    @user_id,
+        data:       data,
+        binary:     true,
+        mkdirp:     true
+      )
+      @result.files += 1
+      @count += 1
+      return
+    end
 
     # Decode best-effort; binary content survives as UTF-8 replacement chars.
     text = data.dup.force_encoding('UTF-8')

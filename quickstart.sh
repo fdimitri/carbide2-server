@@ -10,6 +10,12 @@
 #
 # Idempotent — safe to re-run. Pass --rebuild to force image rebuild,
 # --shell to also build the (slow, ~4GB) carbide2-shell terminal image.
+#
+# This brings up the simple docker-compose stack (single carbide container
+# + postgres). For the Kubernetes/k3d substrate that mirrors production,
+# use scripts/dev-cluster.sh instead. The two stacks are mutually
+# exclusive; this script refuses to run if a carbide-* k3d cluster exists
+# unless you pass --yes-i-really-know-what-im-doing.
 
 set -euo pipefail
 
@@ -18,10 +24,12 @@ cd "$ROOT"
 
 REBUILD=0
 BUILD_SHELL=0
+FORCE_OVER_K3D=0
 for arg in "$@"; do
   case "$arg" in
     --rebuild) REBUILD=1 ;;
     --shell)   BUILD_SHELL=1 ;;
+    --yes-i-really-know-what-im-doing) FORCE_OVER_K3D=1 ;;
     -h|--help)
       sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
@@ -42,6 +50,41 @@ docker compose version >/dev/null 2>&1 || die "'docker compose' (v2) not availab
 if ! docker info >/dev/null 2>&1; then
   die "cannot talk to Docker daemon — is it running, and is your user in the 'docker' group?
        (try: sudo usermod -aG docker \"\$USER\" && newgrp docker)"
+fi
+
+# ---------------------------------------------------------------------------
+# 1b. Refuse to clobber a k3d-based dev install.
+# ---------------------------------------------------------------------------
+# The docker-compose stack and the k3d substrate (scripts/dev-cluster.sh +
+# charts/workspace) are two PARALLEL deployments. Running both at once works
+# but is almost always a mistake — you end up with two carbide instances,
+# two postgres databases, and confusing port conflicts (both want :3000,
+# :5173, :8080). Detect a likely-active k3d install and bail unless the
+# user explicitly asks for it.
+k3d_in_use() {
+  command -v k3d >/dev/null 2>&1 || return 1
+  # Any k3d cluster whose name starts with "carbide" counts.
+  k3d cluster list 2>/dev/null | awk 'NR>1 {print $1}' | grep -q '^carbide'
+}
+if k3d_in_use && [[ $FORCE_OVER_K3D -ne 1 ]]; then
+  cat >&2 <<EOF
+[quickstart] ERROR: detected an existing k3d cluster (carbide-*).
+
+  You appear to be running the Kubernetes/k3d dev substrate
+  (scripts/dev-cluster.sh + charts/workspace). The docker-compose
+  stack this script brings up is a SEPARATE all-in-one deployment;
+  running both at once will fight over ports 3000/5173/8080 and
+  give you two databases.
+
+  If you're using the k3d substrate, you probably want:
+    kubectl -n ws-1 get pods
+    scripts/dev-lmstudio-relay.sh start   # LLM relay (after reboot)
+
+  To bring this docker-compose stack up anyway, re-run with:
+    $0 --yes-i-really-know-what-im-doing $*
+
+EOF
+  exit 1
 fi
 
 # ---------------------------------------------------------------------------

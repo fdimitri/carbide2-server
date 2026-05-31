@@ -73,8 +73,55 @@ class Api::DirectoryEntriesController < Api::BaseController
     return unless path
     entry = find_entry!(path)
     return unless entry
+    entry_path = entry.srcpath
     entry.destroy!
+
+    # Mirror the delete to disk so the on-disk VFS stays in sync with DBFS.
+    # Worker-driven deletes go through FsStore#handle_delete, which uses the
+    # VFS suppress-set. The REST path is rarer (admin tools, scripts) so we
+    # just remove the file/dir; the watcher will see a :delete inotify event
+    # but `handle_event` bails early when the entry no longer exists.
+    # Fixes #12 in May30-Questions.md.
+    setting   = @project.project_setting
+    root_path = setting&.root_path.presence || @project.default_root_path
+    if root_path.present?
+      disk_path = File.join(root_path, entry_path)
+      FileUtils.rm_rf(disk_path) if File.exist?(disk_path)
+    end
+
     head :no_content
+  rescue => e
+    Rails.logger.warn("destroy_entry disk rm failed: #{e.class}: #{e.message}")
+    head :no_content
+  end
+
+  # GET /api/projects/:project_id/fs/stat?path=/some/path
+  # Lightweight entry metadata for the explorer Properties panel (#5).
+  def stat
+    entry = find_entry!(params[:path])
+    return unless entry
+    render json: entry.stat_hash
+  end
+
+  # GET /api/projects/:project_id/fs/blob?path=/img.png
+  # Streams the raw bytes of a binary (or any) entry straight from disk.
+  # Honours Range: bytes=start-end for partial reads (image previews, big
+  # downloads). Returns 404 if the file isn't on disk. See #13.
+  def blob
+    entry = find_entry!(params[:path])
+    return unless entry
+    return render json: { error: 'is a directory' }, status: :unprocessable_entity if entry.ftype == 'folder'
+
+    setting   = @project.project_setting
+    root_path = setting&.root_path.presence || @project.default_root_path
+    disk_path = File.join(root_path.to_s, entry.srcpath)
+    return render json: { error: 'not on disk' }, status: :not_found unless File.file?(disk_path)
+
+    content_type = Marcel::MimeType.for(Pathname.new(disk_path)) rescue 'application/octet-stream'
+    send_file disk_path,
+              type:        content_type,
+              disposition: 'inline',
+              filename:    entry.cur_name
   end
 
   # POST /api/projects/:project_id/fs/upload

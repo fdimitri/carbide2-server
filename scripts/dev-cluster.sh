@@ -91,6 +91,23 @@ kubectl -n carbide-system wait --for=condition=Ready cluster/carbide-pg --timeou
   warn "postgres cluster not Ready yet; check 'kubectl -n carbide-system describe cluster carbide-pg'"
 }
 
+# --- LM Studio relay --------------------------------------------------------
+# Best-effort: (re)start the socat relay that lets ws-* pods reach
+# host-localhost LM Studio via host.k3d.internal:11234. The relay binds the
+# cluster's docker bridge gateway IP, which can change across cluster
+# stop/start — so always restart it on cluster bring-up. Skips silently if
+# socat isn't installed; this is only useful when you're actually running an
+# LLM on the host.
+if command -v socat >/dev/null 2>&1; then
+  log "(re)starting LM Studio relay on host.k3d.internal:11234 -> 127.0.0.1:1234"
+  "$(dirname "$0")/dev-lmstudio-relay.sh" stop  >/dev/null 2>&1 || true
+  "$(dirname "$0")/dev-lmstudio-relay.sh" start >/dev/null 2>&1 \
+    && log "relay running" \
+    || warn "relay failed to start (is LM Studio listening on 127.0.0.1:1234?); see /tmp/lmstudio-relay.log"
+else
+  warn "socat not installed — skipping LM Studio relay. Install with 'sudo apt-get install -y socat' if you need LLM agents."
+fi
+
 # --- summary ----------------------------------------------------------------
 log "done"
 cat <<EOF

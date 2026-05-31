@@ -46,9 +46,14 @@ if [[ -z "${BIND_IP}" ]]; then
   exit 1
 fi
 
+# The bind IP appears BEFORE the port in the socat cmdline
+# (`TCP-LISTEN:11234,bind=172.19.0.1,...`), so a single regex needs to
+# match the port and the bind=<ip> token separately.
+PGREP_PAT="socat.*TCP-LISTEN:${LISTEN_PORT}.*bind=${BIND_IP}\\b"
+
 case "${cmd}" in
   start)
-    if pgrep -f "socat.*${BIND_IP}:${LISTEN_PORT}" >/dev/null; then
+    if pgrep -f "${PGREP_PAT}" >/dev/null; then
       echo "relay already running on ${BIND_IP}:${LISTEN_PORT}"
       exit 0
     fi
@@ -67,10 +72,10 @@ case "${cmd}" in
     echo "log: ${LOG}"
     ;;
   stop)
-    pkill -f "socat.*${BIND_IP}:${LISTEN_PORT}" && echo "stopped." || echo "not running."
+    pkill -f "${PGREP_PAT}" && echo "stopped." || echo "not running."
     ;;
   status)
-    if pgrep -f "socat.*${BIND_IP}:${LISTEN_PORT}" >/dev/null; then
+    if pgrep -f "${PGREP_PAT}" >/dev/null; then
       echo "running on ${BIND_IP}:${LISTEN_PORT} -> ${TARGET_HOST}:${TARGET_PORT}"
     else
       echo "not running."
