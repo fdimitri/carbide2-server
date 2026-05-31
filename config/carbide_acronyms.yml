@@ -1,0 +1,32 @@
+# What is CARBIDE? CARBIDE is…
+#
+# A random one is served at GET /about by LandingController#about and
+# injected into the "About" page. Add as many as you like — the more
+# the merrier.
+
+acronyms:
+  # Reasonably serious
+  - "Collaborative Artificial Resource Builder Interface Development Ecosystem"
+  - "Cloud-Assisted Rapid Build & Integration Deployment Engine"
+  - "Collaborative AI Runtime for Building and Iterating on Developer Environments"
+
+  # Recursive (the R stands for CARBIDE)
+  - "CARBIDE Automatically Runs Because It Deploys Everywhere"
+  - "CARBIDE Ain't Really Boring If Done Efficiently"
+
+  # Honest
+  - "Can't Always Run Before I Do Everything"
+  - "Constantly Arguing, Reviewing, Building, Integrating, Deploying, Evaluating"
+  - "Code Almost Ready, Boss Is Demanding Estimates"
+  - "Commit And Regret: Bug Investigation Done Eventually"
+  - "Continuously Avoiding Real Business Interrupts, Deploying Everything"
+  - "Can't Always Remember Brackets In Dynamic Environments"
+
+  # Aspirational
+  - "Coffee And Ruby Build Infrastructure Development Environments"
+  - "Collaboratively Assembling Really Beautiful Integrated Developer Experiences"
+
+  # Chaotic
+  - "CARBIDE Ain't Recursive, Bro, I Delete Everything"
+  - "Continuously Adding Ridiculous Bells, Increasingly Doubting Everything"
+  - "Code And Run... Build? Iterate? Deploy? Erm…"

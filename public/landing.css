@@ -1,0 +1,33 @@
+/* Landing page stylesheet — served from /landing.css.
+   Scoped to the splash at / only; all other pages use the Vite/Tailwind bundle. */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100vh; }
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  background: linear-gradient(160deg, #1a1a1a 0%, #2a2030 100%);
+  color: #ddd;
+  display: flex; align-items: center; justify-content: center; min-height: 100vh;
+}
+main { text-align: center; max-width: 540px; padding: 2rem; }
+h1 {
+  font-weight: 200; font-size: 4rem; margin: 0 0 0.5rem;
+  letter-spacing: 0.04em; color: #fff;
+}
+p.tag     { font-size: 1.1rem; color: #aaa; margin: 0 0 0.75rem; }
+p.acronym { font-size: 0.78rem; color: #666; margin: 0 0 2rem; font-style: italic; }
+.actions  { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+a.btn {
+  display: inline-block; padding: 0.75rem 2rem;
+  background: #2ec4b6; color: #051210; border-radius: 4px;
+  text-decoration: none; font-weight: 500; font-size: 1rem;
+  transition: filter 0.15s;
+}
+a.btn:hover { filter: brightness(1.12); }
+a.btn-ghost {
+  display: inline-block; padding: 0.75rem 2rem;
+  background: transparent; color: #91a2bc; border-radius: 4px;
+  text-decoration: none; font-size: 0.9rem;
+  border: 1px solid #2b3d58; transition: border-color 0.15s, color 0.15s;
+}
+a.btn-ghost:hover { border-color: #2ec4b6; color: #d7fff6; }
+footer { margin-top: 4rem; color: #555; font-size: 0.8rem; }
