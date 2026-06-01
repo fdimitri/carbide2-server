@@ -1,6 +1,10 @@
 Rails.application.routes.draw do
   devise_for :users
 
+  # Cluster-wide landing page at /. The IngressRoute sends Path(`/`) here.
+  root to: 'landing#index'
+  get '/about', to: 'landing#about'
+
   namespace :api, defaults: { format: :json } do
     # Authentication endpoints
     post '/login',  to: 'auth#login'
@@ -25,10 +29,23 @@ Rails.application.routes.draw do
         collection do
           get    'tree',    action: :tree
           get    'content', action: :content
+          get    'stat',    action: :stat
+          get    'blob',    action: :blob
           post   'files',   action: :create_file
           post   'dirs',    action: :create_dir
           patch  'rename',  action: :rename
           delete 'entry',   action: :destroy_entry
+          post   'upload',  action: :upload
+          post   'import',  action: :import_from_disk
+        end
+      end
+
+      # Terminal recordings — asciinema cast files for past PTY sessions.
+      # Index + per-recording cast download + DELETE. WS push of new rows
+      # comes via the worker; this REST surface is for browsing + replay.
+      resources :terminal_recordings, only: [:index, :show, :destroy], path: 'recordings' do
+        member do
+          get :cast
         end
       end
     end

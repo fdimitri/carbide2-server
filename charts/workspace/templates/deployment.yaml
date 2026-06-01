@@ -1,0 +1,177 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "workspace.fullname" . }}
+  labels:
+    {{- include "workspace.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # RWO PVC + single-replica; no rolling.
+  selector:
+    matchLabels:
+      {{- include "workspace.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "workspace.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "workspace.fullname" . }}
+      initContainers:
+        # The workspace DB is pre-created by the CNPG Database CR. The app
+        # user owns it but cannot CREATE DATABASE on the cluster, so the
+        # default db:prepare path (which tries to create dev *and* test DBs)
+        # fails. Run migrations only, against our single dev DB.
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              bundle exec rails db:migrate
+              case "${RAILS_SEED_ON_START:-0}" in
+                1|true|TRUE|yes)
+                  echo "[init] db:seed (RAILS_SEED_ON_START=${RAILS_SEED_ON_START})"
+                  bundle exec rails db:seed
+                  ;;
+              esac
+          env:
+            - name: SKIP_DB_PREPARE
+              value: "1"
+            - name: RAILS_SEED_ON_START
+              value: {{ .Values.rails.seedOnStart | default false | quote }}
+            # Seed-time defaults for the Agents table (db:seed reads these).
+            # Override per-cluster to point at your LM Studio / llama.cpp /
+            # Ollama instance. Inside k3d the host is reachable via the LAN
+            # IP of the host machine.
+            - name: AGENT_DEFAULT_URL
+              value: {{ .Values.agent.defaultUrl | quote }}
+            - name: AGENT_DEFAULT_MODEL
+              value: {{ .Values.agent.defaultModel | quote }}
+            - name: RAILS_ENV
+              value: {{ .Values.rails.env }}
+            - name: POSTGRES_HOST
+              value: {{ .Values.postgres.clusterName }}-rw.{{ .Values.postgres.clusterNamespace }}.svc.cluster.local
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              value: {{ include "workspace.databaseName" . }}
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.credentialsSecret }}
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.credentialsSecret }}
+                  key: password
+      containers:
+        - name: workspace
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: rails
+              containerPort: {{ .Values.rails.port }}
+            - name: worker
+              containerPort: {{ .Values.rails.workerPort }}
+            - name: vite
+              containerPort: {{ .Values.rails.vitePort }}
+          env:
+            - name: SKIP_DB_PREPARE
+              value: "1"
+            - name: WORKSPACE_PROJECT_ID
+              value: {{ .Values.projectId | quote }}
+            - name: RAILS_ENV
+              value: {{ .Values.rails.env }}
+            - name: PORT
+              value: {{ .Values.rails.port | quote }}
+            - name: WORKER_PORT
+              value: {{ .Values.rails.workerPort | quote }}
+            - name: VITE_PORT
+              value: {{ .Values.rails.vitePort | quote }}
+            - name: PROJECTS_ROOT
+              value: /srv/projects
+
+
+            # --- Postgres (CNPG) ---
+            - name: POSTGRES_HOST
+              value: {{ .Values.postgres.clusterName }}-rw.{{ .Values.postgres.clusterNamespace }}.svc.cluster.local
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              value: {{ include "workspace.databaseName" . }}
+            - name: POSTGRES_DB_TEST
+              value: {{ include "workspace.testDatabaseName" . }}
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.credentialsSecret }}
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.credentialsSecret }}
+                  key: password
+
+            # --- JWT ---
+            - name: WORKER_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.jwt.secretName }}
+                  key: secret
+
+            # --- Vite (served behind the ingress, NOT stripped) ---
+            - name: VITE_BASE
+              value: {{ printf "%s/" (include "workspace.pathPrefix" .) | quote }}
+            - name: VITE_HMR_CLIENT_PORT
+              value: {{ .Values.ingress.publicPort | quote }}
+            - name: VITE_API_PROXY
+              value: "http://127.0.0.1:{{ .Values.rails.port }}"
+
+            # --- Rails host allowlist (LAN + cluster DNS + ingress host) ---
+            - name: RAILS_DEV_HOSTS
+              value: {{ .Values.rails.devHosts | quote }}
+
+            # --- Worker shell backend (kube | docker | local) ---
+            - name: CARBIDE_BACKEND
+              value: {{ .Values.worker.backend | quote }}
+            - name: CARBIDE_SHELL_IMAGE
+              value: {{ .Values.worker.shellImage | quote }}
+            - name: CARBIDE_SHELL_PULL_POLICY
+              value: {{ .Values.worker.shellImagePullPolicy | quote }}
+            - name: CARBIDE_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: CARBIDE_PROJECTS_PVC
+              value: {{ include "workspace.fullname" . }}-files
+
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+
+          volumeMounts:
+            - name: files
+              mountPath: /srv/projects
+          readinessProbe:
+            httpGet:
+              path: /up
+              port: rails
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /up
+              port: rails
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: files
+          persistentVolumeClaim:
+            claimName: {{ include "workspace.fullname" . }}-files

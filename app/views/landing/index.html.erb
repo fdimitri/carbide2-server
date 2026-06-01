@@ -1,0 +1,12 @@
+<% content_for :title, 'Carbide2' %>
+
+<main>
+  <h1>Carbide2</h1>
+  <p class="tag">Cloud-native development workspaces.</p>
+  <p class="acronym">What is CARBIDE? CARBIDE is&hellip; <%= @acronym %></p>
+  <div class="actions">
+    <a class="btn" href="<%= LandingController::WORKSPACE_PATH %>/login">Sign in</a>
+    <a class="btn-ghost" href="<%= LandingController::WORKSPACE_PATH %>/about">About CARBIDE</a>
+  </div>
+  <footer>carbide2-server &middot; <%= Rails.env %></footer>
+</main>

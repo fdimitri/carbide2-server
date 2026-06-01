@@ -7,12 +7,16 @@
 # Behaviour:
 # - Creates the project root ('/') if it does not exist.
 # - For each directory found: creates a 'folder' DirectoryEntry.
-# - For each file found: creates a 'file' DirectoryEntry and a 'setContents'
-#   FileChange containing the file's content, unless the entry already has
-#   existing FileChanges (DB takes priority over disk in that case).
-# - Skips binary files (detected by null-byte presence in first 8 KB).
+# - For each file found: creates a 'file' DirectoryEntry. Text files also get
+#   an initial 'setContents' FileChange (skipped when the entry already has
+#   FileChanges — DB takes priority over disk). Binary files are tracked as
+#   DBFS entries with `binary: true` and NO FileChange — their bytes live on
+#   disk only and are served via the blob endpoint (see #13 in May30-Questions.md).
+# - Populates POSIX metadata (mode, owner, group, size, mtime) on every entry.
 # - Skips files / directories matching IGNORED_PATTERNS.
 # - Logs progress to stdout.
+require 'etc'
+
 class FsLoader
   IGNORED_PATTERNS = [
     /\A\.git(\/|$)/,
@@ -77,13 +81,16 @@ class FsLoader
 
   def import_dir(srcpath)
     existing = DirectoryEntry.find_by_project_and_path(@project_id, srcpath)
-    return existing if existing
+    if existing
+      existing.refresh_disk_stat!(File.join(@root_path, srcpath.sub(%r{\A/}, '')))
+      return existing
+    end
 
     parent_path = File.dirname(srcpath)
     parent      = DirectoryEntry.find_by_project_and_path(@project_id, parent_path)
     return unless parent  # should not happen if we walk top-down
 
-    DirectoryEntry.create!(
+    entry = DirectoryEntry.create!(
       project_id:    @project_id,
       owner_id:      parent.id,
       created_by_id: @user_id,
@@ -91,6 +98,7 @@ class FsLoader
       srcpath:       srcpath,
       ftype:         'folder'
     )
+    entry.refresh_disk_stat!(File.join(@root_path, srcpath.sub(%r{\A/}, '')))
     @stats[:dirs] += 1
     log "  dir:  #{srcpath}"
   end
@@ -98,7 +106,11 @@ class FsLoader
   def import_file(disk_path, srcpath)
     entry = DirectoryEntry.find_by_project_and_path(@project_id, srcpath)
 
-    if entry && entry.file_changes.any?
+    if entry && (entry.file_changes.any? || entry.binary?)
+      # DB wins for text files that already have history. For binary entries
+      # there is no history but the bytes are authoritative on disk — just
+      # refresh stat and move on.
+      entry.refresh_disk_stat!(disk_path) if entry.binary?
       @stats[:existing] += 1
       log "  skip (has changes): #{srcpath}"
       return entry
@@ -111,18 +123,43 @@ class FsLoader
       return
     end
 
-    content = File.read(disk_path, encoding: 'binary')
-    if content[0, 8192].include?("\x00")
-      @stats[:skipped] += 1
-      log "  skip (binary): #{srcpath}"
-      return
-    end
-
-    content = content.encode('UTF-8', invalid: :replace, undef: :replace, replace: '')
-
     parent_path = File.dirname(srcpath)
     parent      = DirectoryEntry.find_by_project_and_path(@project_id, parent_path)
     return unless parent
+
+    raw_head = File.binread(disk_path, [size, 8192].min)
+    is_binary = raw_head.include?("\x00")
+
+    if is_binary
+      # Track as DBFS entry; bytes stay on disk. Served by the blob endpoint.
+      unless entry
+        entry = DirectoryEntry.create!(
+          project_id:    @project_id,
+          owner_id:      parent.id,
+          created_by_id: @user_id,
+          cur_name:      File.basename(srcpath),
+          srcpath:       srcpath,
+          ftype:         'file',
+          binary:        true,
+          last_size:     size
+        )
+      else
+        entry.update_columns(binary: true, last_size: size, updated_at: Time.current)
+      end
+      entry.refresh_disk_stat!(disk_path)
+      @stats[:files] += 1
+      log "  file: #{srcpath} (#{size} bytes, binary)"
+      return entry
+    end
+
+    content = File.read(disk_path, mode: 'rb')
+    # Interpret bytes as UTF-8 and only drop sequences that are actually
+    # invalid UTF-8. The previous .encode('UTF-8', ...) call treated the
+    # ASCII-8BIT source as encoding-less and replaced EVERY byte >= 0x80
+    # with '', which silently stripped en-dashes (–), em-dashes (—),
+    # smart quotes, accents, etc. — even from valid UTF-8 source files.
+    content.force_encoding('UTF-8')
+    content = content.scrub('') unless content.valid_encoding?
 
     unless entry
       entry = DirectoryEntry.create!(
@@ -145,6 +182,7 @@ class FsLoader
       revision:           0,
       mtime:              File.mtime(disk_path)
     )
+    entry.refresh_disk_stat!(disk_path)
 
     @stats[:files] += 1
     log "  file: #{srcpath} (#{size} bytes)"

@@ -7,18 +7,30 @@ require 'eventmachine'
 require 'em-websocket'
 require 'json'
 require 'jwt'
+require 'open3'
 require 'pty'
+require 'securerandom'
 require 'io/console'
 require 'uri'
 require_relative 'terminal_instance'
+require_relative 'terminal_recorder'
 require_relative 'chat_room'
 require_relative 'open_document'
 require_relative 'project_container'
+require_relative 'project_pod'
 require_relative 'session'
 require_relative 'ar_boot'
 require_relative 'fs_store'
 require_relative 'vfs_flusher'
 require_relative 'vfs_watcher'
+require_relative 'agent_tools'
+require_relative 'agent_session'
+require_relative 'command'
+require_relative 'debug_stream'
+require_relative 'handlers/term_handlers'
+require_relative 'handlers/chat_handlers'
+require_relative 'handlers/fs_handlers'
+require_relative 'handlers/agent_handlers'
 require 'set'
 
 WORKER_SECRET = ENV.fetch('WORKER_JWT_SECRET', 'replace_me')
@@ -67,6 +79,8 @@ TERMINALS           = {}        # terminal_id (int) => TerminalInstance
 CHAT_ROOMS          = {}        # room_id (string)  => ChatRoom
 OPEN_DOCUMENTS      = {}        # "#{project_id}:#{path}" => OpenDocument
 PROJECT_CONTAINERS  = {}        # project_id (int)  => ProjectContainer
+PROJECT_PODS        = {}        # project_id (int)  => ProjectPod
+POD_REFCOUNTS       = Hash.new(0)  # project_id => live terminal count
 SESSIONS_BY_PROJECT = {}        # project_id => [Session, ...]
 VFS_FLUSH_SUPPRESS  = Set.new   # absolute paths being written by VfsFlusher
 VFS_FLUSHERS        = {}        # project_id => VfsFlusher
@@ -75,19 +89,42 @@ VFS_WATCHERS        = {}        # project_id => VfsWatcher
 # ---------------------------------------------------------------------------
 # Message router
 # ---------------------------------------------------------------------------
+# Tiny handler module for the 'debug' commandSet — just (un)subscribes the
+# caller to the DebugStream pub/sub. Events are pushed via DebugStream.emit
+# from anywhere in the worker; see worker/debug_stream.rb.
+module DebugHandlers
+  def self.dispatch(cmd, session, payload)
+    case cmd
+    when 'subscribe'
+      scope = payload['scope'] == 'all' ? :all : nil
+      DebugStream.subscribe(session, scope: scope)
+      send_msg(session.ws, 'debug', 'subscribed', { scope: (scope || session.project_id).to_s })
+    when 'unsubscribe'
+      DebugStream.unsubscribe(session)
+      send_msg(session.ws, 'debug', 'unsubscribed', {})
+    else
+      send_msg(session.ws, 'system', 'error', { message: "unknown debug cmd: #{cmd}" })
+    end
+  end
+end
+
+ROUTES = {
+  'term'  => TermHandlers,
+  'chat'  => ChatHandlers,
+  'fs'    => FsHandlers,
+  'agent' => AgentHandlers,
+  'debug' => DebugHandlers,
+}.freeze
+
 def route(session, msg_str)
   msg     = JSON.parse(msg_str)
   cs      = msg['cs']
   cmd     = msg['cmd']
   payload = msg['payload'] || {}
 
-  case cs
-  when 'term'
-    handle_term(session, cmd, payload)
-  when 'chat'
-    handle_chat(session, cmd, payload)
-  when 'fs'
-    handle_fs(session, cmd, payload)
+  handler = ROUTES[cs]
+  if handler
+    handler.dispatch(cmd, session, payload)
   else
     send_msg(session.ws, 'system', 'error', { message: "unknown commandSet: #{cs}" })
   end
@@ -95,150 +132,26 @@ rescue JSON::ParserError
   send_msg(session.ws, 'system', 'error', { message: 'invalid json' })
 end
 
-def handle_term(session, cmd, payload)
-  case cmd
-  when 'create'
-    begin
-      # Create new terminal in current project — attach to (or start) the
-      # project's persistent Docker container.
-      terminal_id    = (TERMINALS.keys.map(&:to_i).max || 0) + 1
-      requested_name = payload['name']
-      puts "[handle_term] creating terminal #{terminal_id} for project #{session.project_id}"
+# Called once per terminal when its PTY reader hits EOF (shell exited, was
+# killed, or the user clicked 'Destroy'). Prunes the global map, removes the
+# id from every session's list, and re-broadcasts the project's terminal list
+# so the UI removes the entry.
+def on_terminal_exit(tid, project_id)
+  return unless TERMINALS.delete(tid)
+  (SESSIONS_BY_PROJECT[project_id] || []).each { |s| s.terminals.delete(tid) }
+  broadcast_terminals_to_project(project_id)
+  remaining = get_project_terminals(project_id).size
+  puts "[on_terminal_exit] terminal=#{tid} project=#{project_id} pruned; #{remaining} remain"
 
-      proj = Project.find_by(id: session.project_id)
-
-      if ENV['CARBIDE_USE_DOCKER'] == '1'
-        container = PROJECT_CONTAINERS[session.project_id] ||=
-          ProjectContainer.new(session.project_id, root_path: proj&.project_setting&.root_path.presence)
-        container.ensure_running!
-        term = TerminalInstance.new(
-          terminal_id,
-          project_id: session.project_id,
-          cols: 80, rows: 24,
-          name: requested_name,
-          cmd:  container.exec_cmd,
-          cwd:  nil   # cwd is handled by the container's -w flag
-        )
-      else
-        cwd  = proj&.project_setting&.root_path.presence || PROJECT_ROOT
-        term = TerminalInstance.new(
-          terminal_id,
-          project_id: session.project_id,
-          cols: 80, rows: 24,
-          name: requested_name,
-          cwd:  cwd
-        )
-      end
-      TERMINALS[terminal_id] = term
-      puts "[handle_term] sending 'created' to client"
-      send_msg(session.ws, 'term', 'created', { terminal_id: terminal_id })
-      puts "[handle_term] broadcasting terminal list to project"
-      broadcast_terminals_to_project(session.project_id)
-      puts "[handle_term] done"
-    rescue => e
-      puts "[handle_term] ERROR: #{e.class} #{e.message}\n#{e.backtrace.first(5).join("\n")}"
-      send_msg(session.ws, 'system', 'error', { message: "Failed to create terminal: #{e.message}" })
+  # Ref-count the kube-backed pod; tear it down when the last terminal exits.
+  if ENV.fetch('CARBIDE_BACKEND', 'local') == 'kube' && PROJECT_PODS.key?(project_id)
+    POD_REFCOUNTS[project_id] -= 1 if POD_REFCOUNTS[project_id] > 0
+    if POD_REFCOUNTS[project_id] <= 0
+      POD_REFCOUNTS.delete(project_id)
+      pod = PROJECT_PODS.delete(project_id)
+      Thread.new { pod.stop! } if pod  # don't block the EM reactor on kubectl delete
     end
-
-  when 'join'
-    tid  = payload['terminal_id'].to_i
-    term = TERMINALS[tid]
-    if term && term.project_id == session.project_id
-      term.add_client(session.ws)
-      session.terminals << tid unless session.terminals.include?(tid)
-      send_msg(session.ws, 'term', 'joined', { terminal_id: tid, rows: term.rows, cols: term.cols })
-    else
-      send_msg(session.ws, 'system', 'error', { message: "terminal #{tid} not found or access denied" })
-    end
-
-  when 'input'
-    tid  = payload['terminal_id'].to_i
-    term = TERMINALS[tid]
-    term.write_input(payload['data'].to_s) if term
-
-  when 'resize'
-    tid  = payload['terminal_id'].to_i
-    term = TERMINALS[tid]
-    if term
-      term.apply_winsize(payload['rows'], payload['cols'])
-      broadcast(term.clients.values, 'term', 'resized', {
-        terminal_id: tid,
-        rows: term.rows,
-        cols: term.cols,
-        user_id: session.user_id
-      })
-    end
-
-  when 'rename'
-    tid  = payload['terminal_id'].to_i
-    term = TERMINALS[tid]
-    if term && term.project_id == session.project_id && term.rename(payload['name'])
-      send_msg(session.ws, 'term', 'renamed', { terminal_id: tid, name: term.name })
-      broadcast_terminals_to_project(session.project_id)
-    else
-      send_msg(session.ws, 'system', 'error', { message: "terminal #{tid} rename failed" })
-    end
-
-  when 'leave'
-    tid = payload['terminal_id'].to_i
-    TERMINALS[tid]&.remove_client(session.ws)
-    session.terminals.delete(tid)
   end
-end
-
-def handle_chat(session, cmd, payload)
-  case cmd
-  when 'join'
-    cid = Integer(payload['channel_id']) rescue nil
-    return send_msg(session.ws, 'system', 'error', { message: 'chat join requires channel_id' }) unless cid
-    rid  = "project_#{session.project_id}_channel_#{cid}"
-    room = CHAT_ROOMS[rid] ||= ChatRoom.new(rid, channel_id: cid)
-    already_joined = room.member?(session.ws)
-    room.add_client(session.ws, user_id: session.user_id, name: session.name)
-    session.rooms << rid unless session.rooms.include?(rid)
-    send_msg(session.ws, 'chat', 'joined', { channel_id: cid, room_id: rid, already_joined: already_joined })
-
-  when 'message'
-    cid = Integer(payload['channel_id']) rescue nil
-    return send_msg(session.ws, 'system', 'error', { message: 'chat message requires channel_id' }) unless cid
-    rid  = "project_#{session.project_id}_channel_#{cid}"
-    room = CHAT_ROOMS[rid]
-    unless room && room.member?(session.ws)
-      return send_msg(session.ws, 'system', 'error', { message: 'not joined to channel' })
-    end
-    room.handle_message(session.ws, payload['text'].to_s)
-
-  when 'typing'
-    cid = Integer(payload['channel_id']) rescue nil
-    return unless cid
-    rid  = "project_#{session.project_id}_channel_#{cid}"
-    room = CHAT_ROOMS[rid]
-    room&.handle_typing(session.ws)
-
-  when 'leave'
-    cid = Integer(payload['channel_id']) rescue nil
-    return send_msg(session.ws, 'system', 'error', { message: 'chat leave requires channel_id' }) unless cid
-    rid = "project_#{session.project_id}_channel_#{cid}"
-    room = CHAT_ROOMS[rid]
-    unless room && room.member?(session.ws)
-      return send_msg(session.ws, 'system', 'error', { message: 'not joined to channel' })
-    end
-    room.remove_client(session.ws)
-    session.rooms.delete(rid)
-    send_msg(session.ws, 'chat', 'left', { channel_id: cid, room_id: rid })
-  end
-end
-
-# ---------------------------------------------------------------------------
-# Filesystem handler — database-backed via FsStore
-# ---------------------------------------------------------------------------
-def handle_fs(session, cmd, payload)
-  FsStore.handle(
-    session, cmd, payload,
-    SESSIONS_BY_PROJECT,
-    method(:send_msg),
-    method(:broadcast)
-  )
 end
 
 def get_project_terminals(project_id)
@@ -272,6 +185,29 @@ EM.run do
 
   puts "Carbide2 worker starting on #{host}:#{port}"
   puts "[worker] Docker container mode: #{ENV['CARBIDE_USE_DOCKER'] == '1' ? 'enabled' : 'disabled (set CARBIDE_USE_DOCKER=1 to enable)'}"
+  puts "[worker] Shell backend: #{ENV.fetch('CARBIDE_BACKEND', 'local')} (image=#{ENV['CARBIDE_SHELL_IMAGE'] || 'n/a'} ns=#{ENV['CARBIDE_NAMESPACE'] || 'n/a'})"
+
+  # Big-hammer orphan cleanup: any carbide2-shell pods left in this
+  # workspace's namespace from a previous worker incarnation are dead to us
+  # (POD_REFCOUNTS lives in memory). Their PTYs are gone, no client is bound,
+  # and the pod is just consuming a node slot. Nuke them on startup. Other
+  # workspaces have their own namespaces, so this is scoped.
+  if ENV.fetch('CARBIDE_BACKEND', 'local') == 'kube'
+    EM.defer do
+      ns = ENV.fetch('CARBIDE_NAMESPACE') { ProjectPod.read_namespace }
+      puts "[worker] pruning orphan carbide2-shell pods in ns=#{ns}"
+      out, err, status = Open3.capture3(
+        'kubectl', 'delete', 'pod', '-n', ns,
+        '-l', 'app.kubernetes.io/name=carbide2-shell',
+        '--ignore-not-found', '--wait=false', '--grace-period=5'
+      )
+      if status.success?
+        puts "[worker] orphan prune: #{out.strip.empty? ? 'nothing to delete' : out.strip}"
+      else
+        warn "[worker] orphan prune failed: #{err.strip}"
+      end
+    end
+  end
 
   # Stop all project containers and VFS watchers cleanly when the worker shuts down.
   EM.add_shutdown_hook do
@@ -280,41 +216,57 @@ EM.run do
     puts '[worker] all project containers and VFS watchers stopped'
   end
 
-  # Seed the filesystem for project 1 from the default directory on startup.
-  # Override with FS_ROOT env var; disable entirely with FS_SKIP_LOAD=1.
-  # If the project has a root_path set in project_settings in the DB, that takes precedence over FS_ROOT.
+  # Seed the filesystem for every project from its configured root on startup.
+  # FS_PROJECT_ID still works as a single-project override; FS_ROOT only
+  # applies in that single-project mode (it makes no sense to point every
+  # project at the same directory). Disable entirely with FS_SKIP_LOAD=1.
   unless ENV['FS_SKIP_LOAD'] == '1'
     EM.defer do
       begin
-        project_id = Integer(ENV.fetch('FS_PROJECT_ID', '1'))
-        proj       = Project.find_by(id: project_id)
-        # Resolution order:
-        #   1. project.project_setting.root_path (DB, set by Project#ensure_project_setting!)
-        #   2. FS_ROOT env (operator override)
-        #   3. PROJECTS_ROOT/<project_id>  (matches Project.default_root_path)
         projects_root = ENV.fetch('PROJECTS_ROOT', '/srv/projects')
-        fs_root       = File.expand_path(
-          proj&.project_setting&.root_path.presence ||
-          ENV['FS_ROOT'].presence ||
-          File.join(projects_root, project_id.to_s)
-        )
-        FileUtils.mkdir_p(fs_root) rescue nil
-        puts "[startup] Loading filesystem for project #{project_id} from #{fs_root}"
-        stats = FsLoader.new(project_id: project_id, root_path: fs_root).load!
-        puts "[startup] FS load complete — #{stats[:dirs]} dirs, #{stats[:files]} files, #{stats[:existing]} skipped (already in DB)"
+        single_id     = ENV['FS_PROJECT_ID']
+        fs_root_env   = ENV['FS_ROOT'].presence
 
-        # Start periodic flush (DB → disk) and inotify watcher (disk → DB)
-        EM.next_tick do
-          flusher = VfsFlusher.new(project_id: project_id, root_path: fs_root,
-                                   suppress_set: VFS_FLUSH_SUPPRESS)
-          VFS_FLUSHERS[project_id] = flusher
-          EM.add_periodic_timer(VfsFlusher::POLL_INTERVAL) { flusher.flush! }
+        project_ids =
+          if single_id
+            [Integer(single_id)]
+          else
+            Project.pluck(:id)
+          end
 
-          watcher = VfsWatcher.new(project_id: project_id, root_path: fs_root,
-                                   suppress_set: VFS_FLUSH_SUPPRESS)
-          VFS_WATCHERS[project_id] = watcher
-          watcher.start!(sessions_by_project: SESSIONS_BY_PROJECT,
-                         broadcast_fn: method(:broadcast))
+        project_ids.each do |project_id|
+          proj    = Project.find_by(id: project_id)
+          next unless proj
+
+          # Resolution order:
+          #   1. project.project_setting.root_path
+          #   2. FS_ROOT env (single-project mode only)
+          #   3. PROJECTS_ROOT/<project_id>
+          fs_root = File.expand_path(
+            proj.project_setting&.root_path.presence ||
+            (single_id ? fs_root_env : nil) ||
+            File.join(projects_root, project_id.to_s)
+          )
+          FileUtils.mkdir_p(fs_root) rescue nil
+          puts "[startup] Loading filesystem for project #{project_id} from #{fs_root}"
+          stats = FsLoader.new(project_id: project_id, root_path: fs_root).load!
+          puts "[startup] FS load complete (project #{project_id}) — " \
+               "#{stats[:dirs]} dirs, #{stats[:files]} files, " \
+               "#{stats[:existing]} skipped (already in DB)"
+
+          # Start periodic flush (DB → disk) and inotify watcher (disk → DB)
+          EM.next_tick do
+            flusher = VfsFlusher.new(project_id: project_id, root_path: fs_root,
+                                     suppress_set: VFS_FLUSH_SUPPRESS)
+            VFS_FLUSHERS[project_id] = flusher
+            EM.add_periodic_timer(VfsFlusher::POLL_INTERVAL) { flusher.flush! }
+
+            watcher = VfsWatcher.new(project_id: project_id, root_path: fs_root,
+                                     suppress_set: VFS_FLUSH_SUPPRESS)
+            VFS_WATCHERS[project_id] = watcher
+            watcher.start!(sessions_by_project: SESSIONS_BY_PROJECT,
+                           broadcast_fn: method(:broadcast))
+          end
         end
       rescue => e
         puts "[startup] FS load failed: #{e.class}: #{e.message}"
@@ -365,7 +317,10 @@ EM.run do
     ws.onclose do
       if session
         puts "Client disconnected: user=#{session.user_id}"
-        
+
+        # Drop any debug-stream subscription this session held
+        DebugStream.unsubscribe(session)
+
         # Remove session from project tracking
         if SESSIONS_BY_PROJECT[session.project_id]
           SESSIONS_BY_PROJECT[session.project_id].delete(session)

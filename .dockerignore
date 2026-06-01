@@ -1,0 +1,39 @@
+# Environment files must never be baked into the image. The container
+# receives all config via env vars (k8s/docker-compose) or mounted Secrets.
+.env
+.env.*
+!.env.example
+
+# VCS / editor / OS noise
+.git
+.gitignore
+.vscode
+.idea
+*.swp
+.DS_Store
+
+# Local logs and temp
+log/*
+tmp/*
+!log/.keep
+!tmp/.keep
+
+# Node / Ruby build artifacts (rebuilt in image)
+node_modules
+clients/*/node_modules
+clients/*/dist
+public/assets
+public/packs
+public/vite
+
+# Test artifacts
+coverage
+.playwright
+clients/*/test-results
+clients/*/playwright-report
+
+# Charts and infra manifests aren't needed inside the app image
+charts
+deploy
+scripts
+.github

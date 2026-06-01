@@ -1,0 +1,62 @@
+{{- if .Values.ingress.enabled -}}
+{{- $prefix := include "workspace.pathPrefix" . -}}
+{{- $hostExpr := "" -}}
+{{- if .Values.ingress.host -}}
+  {{- $hostExpr = printf "Host(`%s`) && " .Values.ingress.host -}}
+{{- end -}}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "workspace.fullname" . }}-strip
+  labels:
+    {{- include "workspace.labels" . | nindent 4 }}
+spec:
+  stripPrefix:
+    prefixes:
+      - {{ $prefix | quote }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ include "workspace.fullname" . }}
+  labels:
+    {{- include "workspace.labels" . | nindent 4 }}
+spec:
+  entryPoints:
+    {{- toYaml .Values.ingress.entryPoints | nindent 4 }}
+  routes:
+    - match: {{ printf "%sPathPrefix(`%s/ws`)" $hostExpr $prefix | quote }}
+      kind: Rule
+      services:
+        - name: {{ include "workspace.fullname" . }}
+          port: worker
+      middlewares:
+        - name: {{ include "workspace.fullname" . }}-strip
+    - match: {{ printf "%s(PathPrefix(`%s/api`) || Path(`%s/up`) || PathPrefix(`%s/rails`) || PathPrefix(`%s/assets`))" $hostExpr $prefix $prefix $prefix $prefix | quote }}
+      kind: Rule
+      services:
+        - name: {{ include "workspace.fullname" . }}
+          port: rails
+      middlewares:
+        - name: {{ include "workspace.fullname" . }}-strip
+    # Everything else (SPA root + Vite client paths: /@vite, /@id, /src,
+    # /node_modules, HMR ws, etc.) goes to the Vite dev server. We do NOT
+    # strip the prefix here: Vite is configured with base=/w/<id>/ so it
+    # both serves and rewrites URLs under that path. Stripping would break
+    # asset URL resolution.
+    - match: {{ printf "%sPathPrefix(`%s`)" $hostExpr $prefix | quote }}
+      kind: Rule
+      services:
+        - name: {{ include "workspace.fullname" . }}
+          port: vite
+{{- if .Values.ingress.serveRoot }}
+    # Cluster-wide landing page at `/` and `/about`, plus root-level static
+    # assets served from Rails public/. No strip middleware — Rails sees the URL as-is.
+    # Only one workspace per cluster should set serveRoot=true.
+    - match: {{ printf "%s(Path(`/`) || Path(`/about`) || Path(`/landing.css`) || Path(`/favicon.ico`) || Path(`/robots.txt`))" $hostExpr | quote }}
+      kind: Rule
+      services:
+        - name: {{ include "workspace.fullname" . }}
+          port: rails
+{{- end }}
+{{- end }}

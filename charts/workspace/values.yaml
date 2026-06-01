@@ -1,0 +1,116 @@
+# charts/workspace — per-project workspace deployment.
+#
+# Install:
+#   helm upgrade --install ws-1 charts/workspace \
+#     -n ws-1 --create-namespace \
+#     --set projectId=1
+#
+# Required cluster-wide state (provisioned by scripts/dev-cluster.sh):
+#   - CNPG operator running
+#   - CNPG Cluster "carbide-pg" in namespace "carbide-system"
+#   - Traefik installed with IngressRoute CRDs
+#   - StorageClass "local-path" (or override storageClassName)
+
+projectId: 1
+
+image:
+  repository: carbide2
+  tag: dev
+  pullPolicy: IfNotPresent
+
+# Resources for the workspace pod.
+resources:
+  requests:
+    memory: "512Mi"
+    cpu: "200m"
+  limits:
+    memory: "1Gi"
+    cpu: "1"
+
+# Project filesystem PVC. Mounted at /srv/projects/<projectId> inside the pod.
+storage:
+  size: 1Gi
+  storageClassName: local-path
+
+# Shared Postgres cluster (CNPG). Each workspace owns one logical DB on it.
+postgres:
+  clusterName: carbide-pg
+  clusterNamespace: carbide-system
+  # CNPG creates the cluster owner secret as "<clusterName>-app" by default.
+  # It contains username/password for the bootstrap user; we reuse it for
+  # workspace DB connections (the workspace DB is owned by the same user).
+  credentialsSecret: carbide-pg-app
+  # Workspace DB name. Defaults to "carbide_workspace_<projectId>".
+  databaseName: ""
+
+# JWT secret. In production this is mirrored into the workspace namespace by
+# the control plane at provision time. For dev, helm generates it on first
+# install via the lookup() function in templates/jwt-secret.yaml.
+jwt:
+  secretName: workspace-jwt
+  # If you want to pin the secret value across re-installs, set this. Otherwise
+  # the chart generates a random one and stores it in the Secret.
+  secret: ""
+
+ingress:
+  enabled: true
+  # Host can be left empty for path-only matching (works with curl --header
+  # 'Host: anything' or by hitting the LB IP directly).
+  host: ""
+  # External port the browser reaches Traefik on. Used to tell Vite's HMR
+  # client which port to connect back to (the dev k3d cluster maps host
+  # :8080 -> Traefik :80, so the browser loads pages from :8080).
+  publicPort: 8080
+  # Path prefix the workspace is mounted under. The stripprefix middleware
+  # removes this before forwarding to the pod.
+  pathPrefix: "/w/{{ .Values.projectId }}"
+  entryPoints:
+    - web
+  # When true, this workspace also claims the root path `/` and routes it to
+  # its Rails service (LandingController#index). Only enable on ONE workspace
+  # per cluster; the chart does not enforce uniqueness. Defaults to true for
+  # dev where there's only ever one workspace.
+  serveRoot: true
+
+# Per-pod env. Anything here is merged into the Deployment's env list verbatim.
+extraEnv: []
+
+# Rails-side knobs.
+rails:
+  env: development
+  port: 3000
+  # Vite dev server (kept in-pod for dev mode; will be split out in prod).
+  vitePort: 5173
+  # EventMachine worker WS port.
+  workerPort: 8080
+  # Run db:seed in the migrate init container on every pod start. Idempotent
+  # (db/seeds.rb uses find_or_create_by!). Default true for dev so a fresh
+  # cluster comes up with a known user + Demo Project + sample VFS files.
+  seedOnStart: true
+  # Comma-separated host allowlist injected into config.hosts for development.
+  # Wide-open by default: all RFC-1918 ranges, localhost, .svc.cluster.local,
+  # and the LAN IP of the k3d host. Override per install if you want to tighten.
+  devHosts: "localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc.cluster.local,.cluster.local"
+
+# Worker (EventMachine WS server) knobs.
+worker:
+  # Backend used to spawn per-project shells:
+  #   kube   — kubectl exec into a per-project Pod (Dockerfile.shell image)
+  #   docker — legacy: PROJECT_CONTAINERS via host docker socket
+  #   local  — PTY.spawn /bin/bash in the workspace pod itself (no isolation)
+  backend: kube
+  shellImage: carbide2-shell:dev
+  shellImagePullPolicy: IfNotPresent
+
+# Agent (LLM) defaults applied at db:seed time to the Agents table. These
+# only seed initial rows; admins can edit Agent rows at runtime to point
+# different agents at different model servers.
+#
+# For local dev with LM Studio on the host machine, set defaultUrl to your
+# host's LAN IP (k3d nodes can't resolve host.docker.internal). Examples:
+#   defaultUrl: "http://192.168.1.10:1234/v1"   # LM Studio
+#   defaultUrl: "http://ollama.default.svc.cluster.local:11434/v1"  # in-cluster
+agent:
+  defaultUrl:   "http://host.docker.internal:1234/v1"
+  defaultModel: "qwen3-coder-30b-a3b-instruct"
+

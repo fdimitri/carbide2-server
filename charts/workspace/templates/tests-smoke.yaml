@@ -1,0 +1,29 @@
+{{- /*
+  Helm test pod for workspace chart: curl /up and / via Traefik so the
+  request goes through the chart's IngressRoute (mirrors how real clients
+  reach the workspace). Hitting the Service directly trips Rails 8's host
+  authorization (403).
+*/}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "workspace.fullname" . }}-test-smoke
+  labels:
+    {{- include "workspace.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+spec:
+  restartPolicy: Never
+  containers:
+    - name: curl
+      image: curlimages/curl:8.7.1
+      command: ["sh", "-c"]
+      args:
+        - |
+          set -e
+          URL="http://traefik.traefik.svc.cluster.local{{ include "workspace.pathPrefix" . }}"
+          echo "[test] $URL/up"
+          curl -fsSL -H 'Host: localhost' "$URL/up" | grep -q 'background-color: green'
+          echo "[test] $URL/"
+          curl -fsSL -H 'Host: localhost' "$URL/" | grep -q 'Carbide2 IDE'
+          echo "[test] done"
