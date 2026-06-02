@@ -9,3 +9,7 @@ db/*sqlite3*
 
 worker/carbide.yml
 .vscode/
+
+# Ignore key files for decrypting credentials and more.
+/config/*.key
+
