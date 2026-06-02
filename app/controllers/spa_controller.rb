@@ -8,10 +8,23 @@ class SpaController < ActionController::Base
 
   def show
     index = Rails.public_path.join('index.html')
-    if File.exist?(index)
-      render file: index.to_s, layout: false, content_type: 'text/html'
-    else
+    unless File.exist?(index)
       render plain: 'workspace SPA not built; see Dockerfile dashboard-build stage', status: :not_found
+      return
     end
+
+    # Traefik's stripPrefix middleware sets X-Forwarded-Prefix to the
+    # original path prefix (e.g. "/w/2") so the SPA (Vue Router + asset
+    # URLs) can know where it is mounted in the browser. Inject it as
+    # <base href="..."/> so:
+    #   * Vite's compiled `./assets/...` URLs resolve under the prefix
+    #   * Vue Router can read document.baseURI to set its base path
+    html = File.read(index)
+    prefix = request.headers['X-Forwarded-Prefix'].to_s
+    prefix = prefix.sub(%r{/+\z}, '') # trim trailing slashes
+    base_href = prefix.empty? ? '/' : "#{prefix}/"
+    base_tag = %(<base href="#{ERB::Util.html_escape(base_href)}">)
+    html = html.sub(/<head(\s[^>]*)?>/, "\\0\n  #{base_tag}")
+    render html: html.html_safe, layout: false, content_type: 'text/html'
   end
 end
