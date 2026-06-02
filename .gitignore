@@ -5,6 +5,7 @@ log/*
 !.github/workflows/
 !.github/copilot-instructions.md
 *.lock
+!Gemfile.lock
 db/*sqlite3*
 
 worker/carbide.yml
