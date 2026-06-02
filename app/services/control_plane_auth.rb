@@ -8,7 +8,7 @@ require 'uri'
 class ControlPlaneAuth
   DEFAULT_BASE = 'http://control-plane.carbide-system.svc.cluster.local:3001'.freeze
 
-  Result = Struct.new(:ok, :status, :error, :user, keyword_init: true)
+  Result = Struct.new(:ok, :status, :error, :user, :token, keyword_init: true)
 
   def initialize(base_url: ENV['CONTROL_API_BASE'])
     @base_url = (base_url.presence || DEFAULT_BASE).to_s.sub(%r{/+\z}, '')
@@ -36,6 +36,25 @@ class ControlPlaneAuth
     Result.new(ok: true, status: :ok, user: user)
   rescue StandardError => e
     Rails.logger.error("[control-auth] login failed: #{e.class}: #{e.message}")
+    Result.new(ok: false, status: :service_unavailable, error: 'Control auth service unavailable')
+  end
+
+  def workspace_token(project_id:, control_token:)
+    resp = get_json("/api/projects/#{project_id}/ws_token", bearer: control_token)
+    unless resp[:ok]
+      return Result.new(ok: false, status: resp[:code] == 401 ? :unauthorized : :forbidden, error: 'Control-plane rejected workspace access')
+    end
+
+    json = resp[:json]
+    user = json['user']
+    token = json['token']
+    if token.blank? || !user.is_a?(Hash)
+      return Result.new(ok: false, status: :bad_gateway, error: 'Control-plane returned malformed workspace token response')
+    end
+
+    Result.new(ok: true, status: :ok, user: user, token: token)
+  rescue StandardError => e
+    Rails.logger.error("[control-auth] workspace token exchange failed: #{e.class}: #{e.message}")
     Result.new(ok: false, status: :service_unavailable, error: 'Control auth service unavailable')
   end
 

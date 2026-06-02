@@ -7,18 +7,21 @@ class Api::AuthController < ActionController::API
       return
     end
 
-    delegated = ControlPlaneAuth.new.login(
-      email: auth_params[:email],
-      password: auth_params[:password],
-      project_id: project_id
-    )
-    unless delegated.ok
-      render json: { error: delegated.error }, status: delegated.status
+    bearer = bearer_token
+    unless bearer.present?
+      render json: { error: 'Missing control-plane authorization token' }, status: :unauthorized
       return
     end
 
-    user = ensure_local_user_and_membership!(delegated.user, project_id)
-    token = issue_user_token(user, control_user: delegated.user)
+    exchange = ControlPlaneAuth.new.workspace_token(project_id: project_id, control_token: bearer)
+    unless exchange.ok
+      render json: { error: exchange.error }, status: exchange.status
+      return
+    end
+
+    control_user = exchange.user
+    user = ensure_local_user_and_membership!(control_user, project_id)
+    token = issue_user_token(user, control_user: control_user)
 
     render json: {
       user: user_response(user),
@@ -43,6 +46,11 @@ class Api::AuthController < ActionController::API
 
   def auth_params
     params.require(:user).permit(:email, :password, :password_confirmation)
+  end
+
+  def bearer_token
+    header = request.headers['Authorization']
+    header&.start_with?('Bearer ') ? header.split(' ', 2).last : nil
   end
 
   def user_response(user)
