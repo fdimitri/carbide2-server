@@ -74,8 +74,11 @@ FROM base
 COPY --from=gems "${BUNDLE_PATH}" "${BUNDLE_PATH}"
 
 # Copy compiled SPA assets into Rails public/ so ActionDispatch::Static
-# serves them and SpaController falls back to index.html.
-COPY --from=dashboard-build /app/dist /app/public
+# serves them. index.html is NOT placed under public/ — SpaController
+# reads it from app/spa/ and injects <base href> from X-Forwarded-Prefix
+# at request time so the SPA mounts correctly under /w/<id>/.
+COPY --from=dashboard-build /app/dist/assets /app/public/assets
+COPY --from=dashboard-build /app/dist/index.html /app/spa/index.html
 
 # Copy application source (server, configs). The client tree is
 # already populated above from the frontend stage; we copy the rest of

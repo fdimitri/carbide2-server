@@ -1,8 +1,10 @@
 Rails.application.routes.draw do
   devise_for :users
 
-  # Cluster-wide landing page at /. The IngressRoute sends Path(`/`) here.
-  root to: 'landing#index'
+  # Root: serve the Vue SPA when the workspace image was built with the
+  # dashboard-build stage; SpaController falls back to LandingController
+  # when no SPA bundle is present (plain server-only deploys).
+  root to: 'spa#show'
   get '/about', to: 'landing#about'
 
   namespace :api, defaults: { format: :json } do

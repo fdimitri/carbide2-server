@@ -7,8 +7,11 @@ class SpaController < ActionController::Base
   skip_forgery_protection
 
   def show
-    index = Rails.public_path.join('index.html')
+    index = Rails.root.join('app', 'spa', 'index.html')
     unless File.exist?(index)
+      # No SPA bundle was built into this image — fall back to the
+      # Rails landing page (server-only / dev runs without dashboard-build).
+      return redirect_to('/about') if request.path == '/'
       render plain: 'workspace SPA not built; see Dockerfile dashboard-build stage', status: :not_found
       return
     end
