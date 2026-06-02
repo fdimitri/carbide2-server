@@ -40,7 +40,7 @@ class ControlPlaneAuth
   end
 
   def workspace_token(project_id:, control_token:)
-    resp = get_json("/api/projects/#{project_id}/ws_token", bearer: control_token)
+    resp = post_json("/api/projects/#{project_id}/ws_token", {}, bearer: control_token)
     unless resp[:ok]
       return Result.new(ok: false, status: resp[:code] == 401 ? :unauthorized : :forbidden, error: 'Control-plane rejected workspace access')
     end
@@ -62,10 +62,6 @@ class ControlPlaneAuth
 
   def post_json(path, body, bearer: nil)
     request_json(Net::HTTP::Post, path, body: body, bearer: bearer)
-  end
-
-  def get_json(path, bearer: nil)
-    request_json(Net::HTTP::Get, path, bearer: bearer)
   end
 
   def request_json(http_klass, path, body: nil, bearer: nil)
