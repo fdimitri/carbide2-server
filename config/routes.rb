@@ -20,6 +20,7 @@ Rails.application.routes.draw do
         patch :set_root
         get   :settings
         patch :settings, action: :update_settings
+        post  :import_from_git
       end
       resources :chat_channels, only: [:index, :create], controller: 'chat_channels' do
         resources :chat_messages, only: [:index, :create], controller: 'chat_messages'
