@@ -86,7 +86,7 @@ External write (terminal, git checkout, etc.)
   → broadcast fs/set_contents → FilePane.onFsSetContents → editor.setValue
 ```
 
-For Vue/Vite client internals, see [clients/carbide2-client/ARCHITECTURE.md](clients/carbide2-client/ARCHITECTURE.md).
+For Vue/Vite client internals, see the [carbide2-client](https://github.com/fdimitri/carbide2-client) repo (`ARCHITECTURE.md`).
 
 ---
 
@@ -171,7 +171,7 @@ See [INSTALL.md](INSTALL.md) for the Compose walkthrough. Note: Compose and k3d 
 ./scripts/smoke-test.sh ws-1                          # HTTP probe
 helm test ws-1 -n ws-1                                # chart smoke pod
 ./scripts/test-rails.sh ws-1                          # rails test inside pod
-cd clients/carbide2-client && npm run test:smoke       # Playwright smoke
+cd ${CARBIDE2_CLIENT:-../carbide2-client} && npm run test:smoke       # Playwright smoke
 ```
 
 CI runs `.github/workflows/substrate-tests.yml`.

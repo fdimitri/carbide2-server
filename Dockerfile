@@ -46,18 +46,32 @@ RUN bundle install && \
     rm -rf "${BUNDLE_PATH}"/ruby/*/cache "${BUNDLE_PATH}"/ruby/*/bundler/gems/*/.git
 
 # --- Frontend deps (npm install only; Vite runs in dev mode at runtime) ---
+#
+# carbide2-server does NOT track a client commit hash (no submodule). The
+# meta-repo `carbide2` is the single source of truth for client versions
+# and is responsible for invoking docker build with the right context:
+#
+#   docker build -t carbide2 \
+#       --build-context client=../carbide2-client \
+#       ./carbide2-server
+#
+# Requires BuildKit (`docker buildx` or DOCKER_BUILDKIT=1).
 FROM base AS frontend
-COPY clients/carbide2-client/package.json clients/carbide2-client/package-lock.json* clients/carbide2-client/
-RUN cd clients/carbide2-client && npm install --no-audit --no-fund
+WORKDIR /app/clients/carbide2-client
+COPY --from=client package.json package-lock.json* ./
+RUN npm install --no-audit --no-fund
+COPY --from=client . ./
 
 # --- Final runtime image ---
 FROM base
 
 # Copy gems and node_modules from the build stages
 COPY --from=gems "${BUNDLE_PATH}" "${BUNDLE_PATH}"
-COPY --from=frontend /app/clients/carbide2-client/node_modules /app/clients/carbide2-client/node_modules
+COPY --from=frontend /app/clients/carbide2-client /app/clients/carbide2-client
 
-# Copy application source (server, worker, client, configs)
+# Copy application source (server, worker, configs). The client tree is
+# already populated above from the frontend stage; we copy the rest of
+# the server checkout last so app code changes don't bust the npm cache.
 COPY . .
 
 # Bootsnap precompile for faster boot

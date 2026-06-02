@@ -13,6 +13,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout carbide2-client (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: fdimitri/carbide2-client
+          path: carbide2-client-src
+
       - name: Install k3d
         run: |
           curl -sfL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.7.4 bash
@@ -33,10 +39,10 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: clients/carbide2-client/package-lock.json
+          cache-dependency-path: carbide2-client-src/package-lock.json
 
       - name: Install Playwright deps
-        working-directory: clients/carbide2-client
+        working-directory: carbide2-client-src
         run: |
           npm ci
           npx playwright install --with-deps chromium
@@ -45,7 +51,7 @@ jobs:
         run: ./scripts/dev-cluster.sh
 
       - name: Build workspace image
-        run: docker build -t carbide2:dev .
+        run: docker buildx build --load -t carbide2:dev --build-context client=./carbide2-client-src .
 
       - name: Import image into k3d
         run: k3d image import carbide2:dev -c carbide-dev
@@ -75,6 +81,7 @@ jobs:
           NAMESPACE: ws-1
           BASE_URL: http://localhost:8080/w/1
           CARBIDE_WS_URL: http://localhost:8080/w/1
+          CARBIDE2_CLIENT: ${{ github.workspace }}/carbide2-client-src
         run: ./scripts/test-substrate.sh
 
       - name: Diagnostics on failure

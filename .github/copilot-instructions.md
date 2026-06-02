@@ -24,8 +24,9 @@ When a runtime bug is reported (wrong behaviour, crash, timeout, missing data):
    - Worker/server logs: read `/tmp/carbide2-worker.log` and the Rails log directly. Do not ask the user for these.
    - Frontend JS issues: you cannot access the browser console directly. However, you CAN
      run Playwright headless from the terminal — do this instead of asking the user.
-     Playwright scripts live in `clients/carbide2-client/tests/e2e/`.
-     - Smoke (all console + WS frames): `cd clients/carbide2-client && npm run test:smoke`
+     Playwright scripts live in the sibling `carbide2-client/tests/e2e/` checkout
+     (env var `CARBIDE2_CLIENT` overrides the default sibling path).
+     - Smoke (all console + WS frames): `cd "${CARBIDE2_CLIENT:-../carbide2-client}" && npm run test:smoke`
      - Terminal flow: `npx playwright test tests/e2e/terminal.spec.js --reporter=list`
      - Chat flow: `npx playwright test tests/e2e/chat.spec.js --reporter=list`
      - All scripts set `localStorage.carbide_log=255` automatically via `addInitScript`.

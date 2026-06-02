@@ -34,16 +34,20 @@ production deploys.
 
 ## 1. Clone the repository
 
-The Vue client lives in a submodule (`clients/carbide2-client`), so use
-`--recurse-submodules` or pull them after the fact:
+The Vue client lives in its own repo, [carbide2-client](https://github.com/fdimitri/carbide2-client).
+Docker builds for `carbide2-server` consume it as a *named build context*
+(`docker buildx build --build-context client=...`), so it must be cloned
+separately — typically as a sibling directory:
 
 ```bash
-git clone --recurse-submodules https://github.com/fdimitri/carbide2-server.git
+git clone https://github.com/fdimitri/carbide2-server.git
+git clone https://github.com/fdimitri/carbide2-client.git
 cd carbide2-server
-
-# Or, if you already cloned without it:
-git submodule update --init --recursive
 ```
+
+For the full multi-component layout (server + control plane + client tracked
+by a single meta-repo), clone [carbide2](https://github.com/fdimitri/carbide2)
+with `--recurse-submodules` instead.
 
 ---
 
@@ -202,7 +206,7 @@ newgrp docker
 docker compose exec carbide bundle exec rails test
 
 # Playwright e2e (against the running stack, run on the host)
-cd clients/carbide2-client
+cd ../carbide2-client   # or wherever you cloned carbide2-client
 npx playwright install --with-deps   # one-time
 npx playwright test --reporter=list
 ```

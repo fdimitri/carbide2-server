@@ -13,3 +13,7 @@ worker/carbide.yml
 # Ignore key files for decrypting credentials and more.
 /config/*.key
 
+
+# carbide2-client tree is provided by the meta-repo or a symlink, never tracked here
+clients/
+

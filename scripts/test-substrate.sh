@@ -27,7 +27,7 @@ echo "==> [3/4] rails minitest"
 "$ROOT/scripts/test-rails.sh" "$NAMESPACE"
 
 echo "==> [4/4] playwright e2e"
-cd "$ROOT/clients/carbide2-client"
+cd "${CARBIDE2_CLIENT:-$ROOT/../carbide2-client}"
 
 # Seed a known user so the login spec has something to authenticate against.
 # Idempotent: find_or_create_by! never raises on re-runs.

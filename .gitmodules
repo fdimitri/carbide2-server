@@ -1,3 +1,0 @@
-[submodule "clients/carbide2-client"]
-	path = clients/carbide2-client
-	url = https://github.com/fdimitri/carbide2-client.git
