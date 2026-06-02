@@ -54,6 +54,12 @@ Rails.application.routes.draw do
 
   get "up" => "rails/health#show", as: :rails_health_check
 
+  # Vue Router history-mode fallback — must come last.
+  # API, Devise, assets, and the health check are all matched above.
+  get '*path', to: 'spa#show', constraints: ->(req) {
+    !req.path.start_with?('/api', '/users', '/rails', '/assets', '/up')
+  }
+
   # To re-enable OAuth in the future:
   # 1. Add :omniauthable to the User model.
   # 2. Restore the omniauth_callbacks controller and route mapping.

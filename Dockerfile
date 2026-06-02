@@ -45,7 +45,7 @@ COPY Gemfile Gemfile.lock ./
 RUN bundle install && \
     rm -rf "${BUNDLE_PATH}"/ruby/*/cache "${BUNDLE_PATH}"/ruby/*/bundler/gems/*/.git
 
-# --- Frontend deps (npm install only; Vite runs in dev mode at runtime) ---
+# --- Frontend build: compile Vue SPA into public/ ---
 #
 # carbide2-server does NOT track a client commit hash (no submodule). The
 # meta-repo `carbide2` is the single source of truth for client versions
@@ -56,18 +56,25 @@ RUN bundle install && \
 #       ./carbide2-server
 #
 # Requires BuildKit (`docker buildx` or DOCKER_BUILDKIT=1).
-FROM base AS frontend
-WORKDIR /app/clients/carbide2-client
+FROM node:22-alpine AS dashboard-build
+WORKDIR /app
 COPY --from=client package.json package-lock.json* ./
-RUN npm install --no-audit --no-fund
+RUN npm ci --no-audit --no-fund
 COPY --from=client . ./
+# VITE_BASE=/ because the Traefik stripprefix middleware removes /w/<id>
+# before forwarding to Rails, so the SPA lives at the server root.
+ENV VITE_CARBIDE_MODE=workspace VITE_BASE=/
+RUN npm run build
 
 # --- Final runtime image ---
 FROM base
 
-# Copy gems and node_modules from the build stages
+# Copy gems from the build stage
 COPY --from=gems "${BUNDLE_PATH}" "${BUNDLE_PATH}"
-COPY --from=frontend /app/clients/carbide2-client /app/clients/carbide2-client
+
+# Copy compiled SPA assets into Rails public/ so ActionDispatch::Static
+# serves them and SpaController falls back to index.html.
+COPY --from=dashboard-build /app/dist /app/public
 
 # Copy application source (server, worker, configs). The client tree is
 # already populated above from the frontend stage; we copy the rest of
