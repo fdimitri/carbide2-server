@@ -7,7 +7,7 @@ class SpaController < ActionController::Base
   skip_forgery_protection
 
   def show
-    index = Rails.root.join('app', 'spa', 'index.html')
+    index = Rails.root.join('spa', 'index.html')
     unless File.exist?(index)
       # No SPA bundle was built into this image — fall back to the
       # Rails landing page (server-only / dev runs without dashboard-build).
