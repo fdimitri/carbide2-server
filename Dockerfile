@@ -76,10 +76,18 @@ COPY --from=gems "${BUNDLE_PATH}" "${BUNDLE_PATH}"
 # serves them and SpaController falls back to index.html.
 COPY --from=dashboard-build /app/dist /app/public
 
-# Copy application source (server, worker, configs). The client tree is
+# Copy application source (server, configs). The client tree is
 # already populated above from the frontend stage; we copy the rest of
 # the server checkout last so app code changes don't bust the npm cache.
 COPY . .
+
+# Worker comes from its own repo (carbide2-worker). In the server checkout
+# 'worker' is a symlink to ../carbide2-worker for local dev convenience;
+# Docker won't follow symlinks outside the build context, so we copy it
+# explicitly here from a named build context and overwrite the symlink.
+#   docker buildx build --build-context worker=../carbide2-worker ...
+RUN rm -rf /app/worker
+COPY --from=worker . /app/worker/
 
 # Bootsnap precompile for faster boot
 RUN bundle exec bootsnap precompile -j 1 --gemfile app/ lib/ || true
