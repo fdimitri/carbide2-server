@@ -123,6 +123,9 @@ spec:
                   name: {{ .Values.jwt.secretName }}
                   key: secret
 
+            - name: CONTROL_API_BASE
+              value: {{ .Values.control.apiBase | quote }}
+
             # --- Vite (served behind the ingress, NOT stripped) ---
             - name: VITE_BASE
               value: {{ printf "%s/" (include "workspace.pathPrefix" .) | quote }}

@@ -102,6 +102,10 @@ worker:
   shellImage: carbide2-shell:dev
   shellImagePullPolicy: IfNotPresent
 
+# Control-plane auth endpoint used by workspace /api/login delegation.
+control:
+  apiBase: "http://control-plane.carbide-system.svc.cluster.local:3001"
+
 # Agent (LLM) defaults applied at db:seed time to the Agents table. These
 # only seed initial rows; admins can edit Agent rows at runtime to point
 # different agents at different model servers.
