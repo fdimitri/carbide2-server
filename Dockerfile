@@ -61,10 +61,11 @@ WORKDIR /app
 COPY --from=client package.json package-lock.json* ./
 RUN npm ci --no-audit --no-fund
 COPY --from=client . ./
-# VITE_BASE=/ because the Traefik stripprefix middleware removes /w/<id>
-# before forwarding to Rails, so the SPA lives at the server root.
-ENV VITE_CARBIDE_MODE=workspace VITE_BASE=/
-RUN npm run build
+# Pass --base via CLI (rather than ENV VITE_BASE) because buildkit was
+# silently dropping the './' value in some setups. Relative asset URLs
+# let the same bundle work under any /w/<id>/ prefix once Traefik strips it.
+ENV VITE_CARBIDE_MODE=workspace
+RUN npx vite build --base=./
 
 # --- Final runtime image ---
 FROM base
