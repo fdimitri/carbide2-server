@@ -1,9 +1,13 @@
 # API authentication controller for JSON-based login/signup
 class Api::AuthController < ActionController::API
   def login
-    project_id = workspace_project_id
-    unless project_id
-      render json: { error: 'Workspace project id is not configured' }, status: :service_unavailable
+    # The control-plane workspace id this pod represents. Used ONLY to mint a
+    # workspace-scoped token from the control plane — it is NOT a local
+    # Project primary key (Model B: this pod has exactly one canonical
+    # project whose local id is unrelated to the control-plane id).
+    workspace_id = control_workspace_id
+    unless workspace_id
+      render json: { error: 'Workspace id is not configured' }, status: :service_unavailable
       return
     end
 
@@ -13,14 +17,14 @@ class Api::AuthController < ActionController::API
       return
     end
 
-    exchange = ControlPlaneAuth.new.workspace_token(project_id: project_id, control_token: bearer)
+    exchange = ControlPlaneAuth.new.workspace_token(project_id: workspace_id, control_token: bearer)
     unless exchange.ok
       render json: { error: exchange.error }, status: exchange.status
       return
     end
 
     control_user = exchange.user
-    user = ensure_local_user_and_membership!(control_user, project_id)
+    user = ensure_local_user_and_membership!(control_user)
     token = issue_user_token(user, control_user: control_user)
 
     render json: {
@@ -30,8 +34,6 @@ class Api::AuthController < ActionController::API
     }
   rescue ActiveRecord::RecordInvalid => e
     render json: { error: e.message }, status: :unprocessable_entity
-  rescue ActiveRecord::RecordNotFound
-    render json: { error: 'Workspace project record is missing' }, status: :service_unavailable
   rescue ArgumentError => e
     render json: { error: e.message }, status: :unprocessable_entity
   end
@@ -89,7 +91,7 @@ class Api::AuthController < ActionController::API
     JWT.encode(payload, secret, 'HS256')
   end
 
-  def workspace_project_id
+  def control_workspace_id
     raw = ENV['WORKSPACE_PROJECT_ID']
     return nil if raw.blank?
     Integer(raw)
@@ -97,7 +99,7 @@ class Api::AuthController < ActionController::API
     nil
   end
 
-  def ensure_local_user_and_membership!(control_user, project_id)
+  def ensure_local_user_and_membership!(control_user)
     email = control_user['email'].to_s.downcase.strip
     raise ArgumentError, 'Control user email missing' if email.empty?
 
@@ -109,7 +111,10 @@ class Api::AuthController < ActionController::API
       user.save!
     end
 
-    project = Project.find(project_id)
+    # Model B: this pod hosts exactly one project; every authenticated user
+    # is a member of it. The local project id is unrelated to the
+    # control-plane workspace id.
+    project = Project.canonical
     ProjectMembership.find_or_create_by!(user: user, project: project)
     user
   end

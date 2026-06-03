@@ -14,6 +14,14 @@ class Project < ActiveRecord::Base
   # Worker, FsLoader, VfsFlusher, ProjectContainer all agree on this layout.
   PROJECTS_ROOT = ENV.fetch('PROJECTS_ROOT', '/srv/projects').freeze
 
+  # A workspace pod hosts exactly ONE project (Model B: Workspace == pod ==
+  # project). This returns that single canonical project, creating it on
+  # first call. Its primary key is LOCAL and unrelated to the control-plane
+  # workspace id — never look a project up by the control-plane id.
+  def self.canonical
+    order(:id).first || create!(name: ENV.fetch('WORKSPACE_NAME', 'workspace'))
+  end
+
   def default_root_path
     File.join(PROJECTS_ROOT, id.to_s)
   end

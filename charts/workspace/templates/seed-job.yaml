@@ -36,16 +36,11 @@ spec:
             - rails
             - runner
             - |
-              pid = Integer(ENV.fetch('WORKSPACE_PROJECT_ID'))
-              proj = Project.find_or_initialize_by(id: pid)
-              if proj.new_record?
-                proj.name = "workspace-#{pid}"
-                proj.save!
-                puts "[seed] created project #{proj.id}: #{proj.name}"
-              else
-                puts "[seed] project #{proj.id} already exists: #{proj.name}"
-              end
+              # Model B: a workspace pod hosts exactly ONE canonical project.
+              # Its local id is independent of the control-plane workspace id.
+              proj = Project.canonical
               proj.ensure_project_setting! if proj.respond_to?(:ensure_project_setting!)
+              puts "[seed] canonical project #{proj.id}: #{proj.name}"
               puts "[seed] root_path: #{proj.project_setting&.root_path}"
           env:
             - name: SKIP_DB_PREPARE
