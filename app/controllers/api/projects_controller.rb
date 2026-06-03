@@ -64,35 +64,6 @@ class Api::ProjectsController < Api::BaseController
     render json: { token: token, project_id: project.id }
   end
 
-  # POST /api/projects/:id/import_from_git { git_url, git_ref? }
-  # Clones a public git repo into the project's on-disk root. ONLY allowed
-  # when the project's VFS is empty — re-importing into a non-empty project
-  # would silently merge files and is dangerous. The frontend hides the
-  # button after first import; the server enforces it as the source of truth.
-  #
-  # Returns 202 + a job id immediately; the actual clone runs in a
-  # background ActiveJob and the new files surface via the VfsWatcher
-  # picking them up over inotify and emitting fs/set_contents to clients.
-  def import_from_git
-    project = find_project
-    git_url = params[:git_url].to_s.strip
-    git_ref = params[:git_ref].to_s.strip
-    git_ref = 'main' if git_ref.empty?
-
-    if git_url.empty?
-      return render json: { error: 'git_url is required' }, status: :unprocessable_entity
-    end
-    unless git_url.match?(/\A(https?:\/\/|git@)[^\s]+\z/)
-      return render json: { error: 'git_url must be an http(s):// or git@ URL' }, status: :unprocessable_entity
-    end
-    if DirectoryEntry.where(project_id: project.id).exists?
-      return render json: { error: 'project is not empty; refusing to import' }, status: :conflict
-    end
-
-    job = ImportFromGitJob.perform_later(project.id, git_url, git_ref)
-    render json: { status: 'queued', job_id: job.job_id, project_id: project.id }, status: :accepted
-  end
-
   # GET /api/projects/:id/settings
   def settings
     project = find_project

@@ -21,6 +21,17 @@ class DirectoryEntry < ApplicationRecord
   validates :ftype,    inclusion: { in: %w[file folder] }
   validates :srcpath,  uniqueness: { scope: :project_id }
 
+  # Every project always has a root '/' folder entry (see .ensure_root!), so a
+  # project is "empty" only when it has NO entries other than that root. Use
+  # this for guards like import-into-empty-project rather than a bare
+  # `where(project_id:).exists?`, which would always see the root and think the
+  # project is non-empty.
+  scope :content, -> { where.not(srcpath: '/') }
+
+  def self.project_empty?(project_id)
+    !content.where(project_id: project_id).exists?
+  end
+
   # -------------------------------------------------------------------------
   # Content replay
   # -------------------------------------------------------------------------
