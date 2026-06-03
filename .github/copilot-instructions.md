@@ -22,16 +22,19 @@ so agents must be conservative and document any scaffolding they add.
 When a runtime bug is reported (wrong behaviour, crash, timeout, missing data):
 1. **Collect data first — read what you can, ask for the rest.**
    - Worker/server logs: read `/tmp/carbide2-worker.log` and the Rails log directly. Do not ask the user for these.
-   - Frontend JS issues: you cannot access the browser console directly. However, you CAN
-     run Playwright headless from the terminal — do this instead of asking the user.
+   - Frontend JS issues: prefer the integrated VS Code browser tools when available
+     (open a page, click/type, screenshot, read the live DOM/computed styles, and
+     run Playwright snippets against a shared browser page). These let you inspect
+     and drive the running SPA directly — do NOT claim you "cannot access the browser."
+     Fall back to terminal Playwright when the integrated tools are unavailable.
      Playwright scripts live in the sibling `carbide2-client/tests/e2e/` checkout
      (env var `CARBIDE2_CLIENT` overrides the default sibling path).
      - Smoke (all console + WS frames): `cd "${CARBIDE2_CLIENT:-../carbide2-client}" && npm run test:smoke`
      - Terminal flow: `npx playwright test tests/e2e/terminal.spec.js --reporter=list`
      - Chat flow: `npx playwright test tests/e2e/chat.spec.js --reporter=list`
      - All scripts set `localStorage.carbide_log=255` automatically via `addInitScript`.
-     Only ask the user for browser output if Playwright itself fails to launch.
-   - Network issues: ask the user for the Network tab or WS frame trace — you cannot see these either.
+   - Network issues: ask the user for the Network tab or WS frame trace if you cannot
+     capture them via the browser tools.
 2. **Read the data before forming a hypothesis.** Do not state a root cause until the
    logs confirm it.
 3. **Make the smallest change that addresses the confirmed root cause.** Do not "clean
