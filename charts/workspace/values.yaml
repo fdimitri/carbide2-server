@@ -106,11 +106,13 @@ worker:
 # only seed initial rows; admins can edit Agent rows at runtime to point
 # different agents at different model servers.
 #
-# For local dev with LM Studio on the host machine, set defaultUrl to your
-# host's LAN IP (k3d nodes can't resolve host.docker.internal). Examples:
-#   defaultUrl: "http://192.168.1.10:1234/v1"   # LM Studio
+# k3d nodes can't resolve host.docker.internal. To reach an LM Studio /
+# llama.cpp / Ollama server on the host, either point at its LAN IP or use
+# the host.k3d.internal relay (see scripts/dev-lmstudio-relay.sh). Examples:
+#   defaultUrl: "http://host.k3d.internal:11234/v1"  # WSL2 + socat relay (dev)
+#   defaultUrl: "http://192.168.1.10:1234/v1"        # LM Studio on the LAN
 #   defaultUrl: "http://ollama.default.svc.cluster.local:11434/v1"  # in-cluster
 agent:
-  defaultUrl:   "http://host.docker.internal:1234/v1"
+  defaultUrl:   "http://host.k3d.internal:11234/v1"
   defaultModel: "qwen3-coder-30b-a3b-instruct"
 
