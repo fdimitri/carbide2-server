@@ -20,7 +20,7 @@ What works today (June 2026):
   - `VfsWatcher` watches disk via inotify and pushes external changes (e.g. edits in a terminal) into the DB, then broadcasts `fs/set_contents` so open editors update immediately.
   - Binary files tracked (stat/mtime only, content on disk). POSIX mode/owner metadata stored.
   - Archive import: upload `.tar.gz` or `.zip` via the UI to populate a project.
-- **Chat** — IRC-style channels (join/leave, persistent message history, typing indicators).
+- **Chat** — IRC-style channels (join/leave, persistent message history, typing indicators). Channels also host **WebRTC video calls** — a call shares the same context as the text channel. Full-mesh peer-to-peer (newcomer offers, glare-free); the worker is a pure signalling relay (`rtc/join`, `rtc/leave`, `rtc/signal`) and never inspects SDP/ICE. Mic/camera toggles in the chat header. Public STUN only for now — no TURN, so calls between peers behind symmetric NAT may fail until a TURN server is configured.
 - **LLM agent** — Rudimentary but working. Worker-side agent sessions run a tool-call loop against a single hardcoded OpenAI-compatible HTTP endpoint. Per-project conversation history with project/private visibility. Tool results streamed to the client. Conversation list and replay.
 - **Project settings** — Per-project: VFS root path, flush interval, flush byte threshold, shell image override.
 - **Debug stream** — Structured worker log event bus; subscribable from the client debug pane.
