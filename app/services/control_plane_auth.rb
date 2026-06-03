@@ -40,7 +40,7 @@ class ControlPlaneAuth
   end
 
   def workspace_token(project_id:, control_token:)
-    resp = post_json("/api/projects/#{project_id}/ws_token", {}, bearer: control_token)
+    resp = post_json("/api/workspaces/#{project_id}/token", {}, bearer: control_token)
     unless resp[:ok]
       return Result.new(ok: false, status: resp[:code] == 401 ? :unauthorized : :forbidden, error: 'Control-plane rejected workspace access')
     end
