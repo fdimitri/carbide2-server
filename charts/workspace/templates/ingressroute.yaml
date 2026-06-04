@@ -4,6 +4,14 @@
 {{- if .Values.ingress.host -}}
   {{- $hostExpr = printf "Host(`%s`) && " .Values.ingress.host -}}
 {{- end -}}
+{{- $eps := .Values.ingress.entryPoints -}}
+{{- /* HTTPS is forced when both web and websecure are served: web only
+       redirects, websecure serves the content. A tls block makes a router
+       TLS-only, so the real routes must NOT be exposed on the plaintext web
+       entrypoint (they would 404 there). */ -}}
+{{- $forceHttps := and (has "websecure" $eps) (has "web" $eps) -}}
+{{- $servingEps := $eps -}}
+{{- if $forceHttps -}}{{- $servingEps = list "websecure" -}}{{- end -}}
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
@@ -14,6 +22,23 @@ spec:
   stripPrefix:
     prefixes:
       - {{ $prefix | quote }}
+{{- if $forceHttps }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "workspace.fullname" . }}-https-redirect
+  labels:
+    {{- include "workspace.labels" . | nindent 4 }}
+spec:
+  # Force HTTPS: 301 every plain HTTP request up to the secure scheme. The
+  # port is explicit because the public HTTPS port may differ from Traefik's
+  # internal exposedPort (e.g. 8443 in the k3d dev cluster).
+  redirectScheme:
+    scheme: https
+    port: {{ .Values.ingress.publicHttpsPort | default 8443 | quote }}
+    permanent: true
+{{- end }}
 ---
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
@@ -23,7 +48,19 @@ metadata:
     {{- include "workspace.labels" . | nindent 4 }}
 spec:
   entryPoints:
-    {{- toYaml .Values.ingress.entryPoints | nindent 4 }}
+    {{- toYaml $servingEps | nindent 4 }}
+  {{- if has "websecure" $servingEps }}
+  # Terminate TLS on websecure. With no explicit secret Traefik serves its
+  # built-in self-signed certificate, which is enough to get a secure context
+  # (required by WebRTC getUserMedia) on the dev/LAN path. Override
+  # ingress.tls with a {secretName: ...} to supply a real certificate.
+  tls:
+    {{- if .Values.ingress.tls }}
+    {{- toYaml .Values.ingress.tls | nindent 4 }}
+    {{- else }}
+    {}
+    {{- end }}
+  {{- end }}
   routes:
     - match: {{ printf "%sPathPrefix(`%s/ws`)" $hostExpr $prefix | quote }}
       kind: Rule
@@ -58,5 +95,37 @@ spec:
       services:
         - name: {{ include "workspace.fullname" . }}
           port: rails
+{{- end }}
+{{- if $forceHttps }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ include "workspace.fullname" . }}-redirect
+  labels:
+    {{- include "workspace.labels" . | nindent 4 }}
+spec:
+  # Web (plaintext) entrypoint: 301-redirect everything up to HTTPS. The route
+  # names a service only because Traefik requires one; the redirect middleware
+  # short-circuits before the backend is reached.
+  entryPoints:
+    - web
+  routes:
+    - match: {{ printf "%sPathPrefix(`%s`)" $hostExpr $prefix | quote }}
+      kind: Rule
+      services:
+        - name: {{ include "workspace.fullname" . }}
+          port: rails
+      middlewares:
+        - name: {{ include "workspace.fullname" . }}-https-redirect
+{{- if .Values.ingress.serveRoot }}
+    - match: {{ printf "%s(Path(`/`) || Path(`/about`) || Path(`/landing.css`) || Path(`/favicon.ico`) || Path(`/robots.txt`))" $hostExpr | quote }}
+      kind: Rule
+      services:
+        - name: {{ include "workspace.fullname" . }}
+          port: rails
+      middlewares:
+        - name: {{ include "workspace.fullname" . }}-https-redirect
+{{- end }}
 {{- end }}
 {{- end }}

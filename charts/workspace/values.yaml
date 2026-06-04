@@ -61,11 +61,20 @@ ingress:
   # client which port to connect back to (the dev k3d cluster maps host
   # :8080 -> Traefik :80, so the browser loads pages from :8080).
   publicPort: 8080
+  # External HTTPS port the browser reaches Traefik on. The HTTP→HTTPS redirect
+  # targets this explicitly because it can differ from Traefik's internal
+  # exposedPort (the dev k3d cluster maps host :8443 -> Traefik :443).
+  publicHttpsPort: 8443
   # Path prefix the workspace is mounted under. The stripprefix middleware
   # removes this before forwarding to the pod.
   pathPrefix: "/w/{{ .Values.projectId }}"
   entryPoints:
     - web
+    - websecure
+  # TLS for the websecure entrypoint. Empty ({}) makes Traefik use its built-in
+  # self-signed certificate — enough for a secure context (WebRTC getUserMedia)
+  # on dev/LAN. Set e.g. {secretName: my-tls} to supply a real certificate.
+  tls: {}
   # When true, this workspace also claims the root path `/` and routes it to
   # its Rails service (LandingController#index). Only enable on ONE workspace
   # per cluster; the chart does not enforce uniqueness. Defaults to true for
