@@ -73,16 +73,11 @@ Rails.application.configure do
   # config.generators.apply_rubocop_autocorrect_after_generate!
 
   # Host allowlist. Rails 8 blocks unknown Host: headers with a 403 by default.
-  # In dev we accept anything on RFC-1918 (so the workspace pod is reachable
-  # from any browser on the LAN) plus cluster-internal DNS. Configurable via
-  # RAILS_DEV_HOSTS (comma-separated; entries with '/' are IP CIDRs, entries
-  # starting with '.' are domain suffixes).
+  # Host authorization is disabled in development — any hostname is accepted.
+  # TODO: restore allowlist-based host gating (RAILS_DEV_HOSTS env var) once
+  # the deploy script reliably injects the public hostname into the pod env.
+  # See https://github.com/fdimitri/carbide2/issues (file as infrastructure issue).
   config.hosts.clear
-  default_hosts = "localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16," \
-                  ".svc.cluster.local,.cluster.local"
-  ENV.fetch("RAILS_DEV_HOSTS", default_hosts).split(",").map(&:strip).reject(&:empty?).each do |h|
-    config.hosts << (h.include?("/") ? IPAddr.new(h) : h)
-  end
   # Health endpoint must always answer (k8s probes, helm tests, smoke checks).
   config.host_authorization = { exclude: ->(request) { request.path == "/up" } }
 end
