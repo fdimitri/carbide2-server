@@ -74,10 +74,8 @@ Rails.application.configure do
 
   # Host allowlist. Rails 8 blocks unknown Host: headers with a 403 by default.
   # Host authorization is disabled in development — any hostname is accepted.
-  # TODO: restore allowlist-based host gating (RAILS_DEV_HOSTS env var) once
-  # the deploy script reliably injects the public hostname into the pod env.
-  # See https://github.com/fdimitri/carbide2/issues (file as infrastructure issue).
-  config.hosts.clear
-  # Health endpoint must always answer (k8s probes, helm tests, smoke checks).
-  config.host_authorization = { exclude: ->(request) { request.path == "/up" } }
+  # config.hosts = nil removes the HostAuthorization middleware entirely;
+  # config.hosts.clear (empty array) still runs the middleware and blocks.
+  # TODO: restore via RAILS_DEV_HOSTS env var — see issue #14.
+  config.hosts = nil
 end
