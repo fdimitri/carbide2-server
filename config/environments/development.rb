@@ -73,9 +73,16 @@ Rails.application.configure do
   # config.generators.apply_rubocop_autocorrect_after_generate!
 
   # Host allowlist. Rails 8 blocks unknown Host: headers with a 403 by default.
-  # Host authorization is disabled in development — any hostname is accepted.
-  # config.hosts = nil removes the HostAuthorization middleware entirely;
-  # config.hosts.clear (empty array) still runs the middleware and blocks.
-  # TODO: restore via RAILS_DEV_HOSTS env var — see issue #14.
-  config.hosts = nil
+  # In dev we accept anything on RFC-1918 (so the workspace pod is reachable
+  # from any browser on the LAN) plus cluster-internal DNS. Configurable via
+  # RAILS_DEV_HOSTS (comma-separated; entries with '/' are IP CIDRs, entries
+  # starting with '.' are domain suffixes).
+  config.hosts.clear
+  default_hosts = "localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16," \
+                  ".svc.cluster.local,.cluster.local"
+  ENV.fetch("RAILS_DEV_HOSTS", default_hosts).split(",").map(&:strip).reject(&:empty?).each do |h|
+    config.hosts << (h.include?("/") ? IPAddr.new(h) : h)
+  end
+  # Health endpoint must always answer (k8s probes, helm tests, smoke checks).
+  config.host_authorization = { exclude: ->(request) { request.path == "/up" } }
 end
