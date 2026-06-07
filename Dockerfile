@@ -78,6 +78,7 @@ COPY --from=gems "${BUNDLE_PATH}" "${BUNDLE_PATH}"
 # reads it from app/spa/ and injects <base href> from X-Forwarded-Prefix
 # at request time so the SPA mounts correctly under /w/<id>/.
 COPY --from=dashboard-build /app/dist/assets /app/public/assets
+COPY --from=dashboard-build /app/dist/favicon.svg /app/public/favicon.svg
 COPY --from=dashboard-build /app/dist/index.html /app/spa/index.html
 
 # Copy application source (server, configs). The client tree is
