@@ -96,10 +96,13 @@ rails:
   # (db/seeds.rb uses find_or_create_by!). Default true for dev so a fresh
   # cluster comes up with a known user + Demo Project + sample VFS files.
   seedOnStart: true
-  # Comma-separated host allowlist injected into config.hosts for development.
-  # Wide-open by default: all RFC-1918 ranges, localhost, .svc.cluster.local,
-  # and the LAN IP of the k3d host. Override per install if you want to tighten.
-  devHosts: "localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc.cluster.local,.cluster.local"
+  # Host allowlist injected into config.hosts (RAILS_DEV_HOSTS) for development.
+  # "*" (or empty) = accept ANY Host: header — the dev default. A CIDR allowlist
+  # can never match the ingress FQDN (e.g. dev1.frankd.local) because a hostname
+  # Host: header doesn't match an IP CIDR, so browsers hitting the box by name
+  # got a 403. Override with a comma-separated list to tighten (entries with '/'
+  # are CIDRs, entries starting with '.' are domain suffixes).
+  devHosts: "*"
 
 # Worker (EventMachine WS server) knobs.
 worker:
