@@ -51,14 +51,14 @@ end
 # compatible endpoint. The default URL targets LM Studio's local server
 # convention (host machine on port 1234). Override via env:
 #
-#   AGENT_DEFAULT_URL    — base URL (default http://host.docker.internal:1234/v1)
+#   AGENT_DEFAULT_URL    — base URL (default http://host.k3d.internal:11234/v1)
 #   AGENT_DEFAULT_MODEL  — model name (default qwen2.5-coder-14b-instruct)
 #
 # Inside k3d the workspace pod can reach the host via the LAN IP of the
 # host machine; set AGENT_DEFAULT_URL to that explicitly per cluster.
 # Seeds are idempotent (find_or_create_by! on slug).
 # -------------------------------------------------------------------------
-default_agent_url   = ENV.fetch('AGENT_DEFAULT_URL',   'http://host.docker.internal:1234/v1')
+default_agent_url   = ENV.fetch('AGENT_DEFAULT_URL',   'http://host.k3d.internal:11234/v1')
 default_agent_model = ENV.fetch('AGENT_DEFAULT_MODEL', 'qwen3-coder-30b-a3b-instruct')
 
 Agent.find_or_create_by!(slug: 'coder') do |a|

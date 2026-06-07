@@ -16,6 +16,9 @@ Rails.application.routes.draw do
     get   '/preferences', to: 'preferences#show'
     patch '/preferences', to: 'preferences#update'
 
+    # Agents — workspace-global LLM personas, editable at runtime.
+    resources :agents, only: [:index, :show, :update]
+
     resources :projects do
       member do
         post  :ws_token
