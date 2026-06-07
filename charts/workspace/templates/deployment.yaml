@@ -95,6 +95,11 @@ spec:
             - name: PROJECTS_ROOT
               value: /srv/projects
 
+            # Persistent worker log on the PVC: survives pod reaping/rollout so
+            # an overnight death is still debuggable (kubectl logs is gone once
+            # the pod is removed). Timestamped + heartbeat; see worker/worker.rb.
+            - name: CARBIDE_WORKER_LOG
+              value: /srv/projects/.carbide/worker.log
 
             # --- Postgres (CNPG) ---
             - name: POSTGRES_HOST
