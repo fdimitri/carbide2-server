@@ -9,6 +9,11 @@
 # Run via docker compose (preferred) — see docker-compose.yml.
 
 ARG RUBY_VERSION=4.0.0
+ARG META_SHA=unknown
+ARG CLIENT_SHA=unknown
+ARG SERVER_SHA=unknown
+ARG WORKER_SHA=unknown
+ARG BUILD_TIME=unknown
 FROM docker.io/library/ruby:$RUBY_VERSION-slim AS base
 
 WORKDIR /app
@@ -57,6 +62,11 @@ RUN bundle install && \
 #
 # Requires BuildKit (`docker buildx` or DOCKER_BUILDKIT=1).
 FROM node:22-alpine AS dashboard-build
+ARG META_SHA
+ARG CLIENT_SHA
+ARG SERVER_SHA
+ARG WORKER_SHA
+ARG BUILD_TIME
 WORKDIR /app
 COPY --from=client package.json package-lock.json* ./
 RUN npm ci --no-audit --no-fund
@@ -65,6 +75,11 @@ COPY --from=client . ./
 # silently dropping the './' value in some setups. Relative asset URLs
 # let the same bundle work under any /w/<id>/ prefix once Traefik strips it.
 ENV VITE_CARBIDE_MODE=workspace
+ENV VITE_APP_META_SHA=$META_SHA
+ENV VITE_APP_CLIENT_SHA=$CLIENT_SHA
+ENV VITE_APP_SERVER_SHA=$SERVER_SHA
+ENV VITE_APP_WORKER_SHA=$WORKER_SHA
+ENV VITE_APP_BUILD_TIME=$BUILD_TIME
 RUN npx vite build --base=./
 
 # --- Final runtime image ---
