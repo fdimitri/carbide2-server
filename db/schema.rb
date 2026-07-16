@@ -10,9 +10,76 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_20_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_07_15_000000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
+
+  create_table "agent_conversations", force: :cascade do |t|
+    t.bigint "agent_id", null: false
+    t.datetime "created_at", null: false
+    t.datetime "last_activity_at"
+    t.bigint "project_id", null: false
+    t.string "title"
+    t.datetime "updated_at", null: false
+    t.bigint "user_id", null: false
+    t.string "uuid", null: false
+    t.string "visibility", default: "project", null: false
+    t.index ["agent_id"], name: "index_agent_conversations_on_agent_id"
+    t.index ["project_id", "last_activity_at"], name: "idx_agent_convos_project_recent"
+    t.index ["project_id", "user_id", "last_activity_at"], name: "idx_agent_convos_recent"
+    t.index ["project_id"], name: "index_agent_conversations_on_project_id"
+    t.index ["user_id"], name: "index_agent_conversations_on_user_id"
+    t.index ["uuid"], name: "index_agent_conversations_on_uuid", unique: true
+  end
+
+  create_table "agent_messages", force: :cascade do |t|
+    t.bigint "agent_conversation_id", null: false
+    t.text "content"
+    t.datetime "created_at", null: false
+    t.string "name"
+    t.string "role", null: false
+    t.string "tool_call_id"
+    t.text "tool_calls_json"
+    t.integer "turn", null: false
+    t.datetime "updated_at", null: false
+    t.index ["agent_conversation_id", "turn"], name: "index_agent_messages_on_agent_conversation_id_and_turn", unique: true
+    t.index ["agent_conversation_id"], name: "index_agent_messages_on_agent_conversation_id"
+  end
+
+  create_table "agents", force: :cascade do |t|
+    t.json "allowed_tools", default: [], null: false
+    t.text "api_key"
+    t.datetime "created_at", null: false
+    t.string "description"
+    t.boolean "enabled", default: true, null: false
+    t.string "model", null: false
+    t.string "name", null: false
+    t.string "provider_url", null: false
+    t.string "role", default: "general", null: false
+    t.json "sampling", default: {}, null: false
+    t.boolean "shell_exec_enabled", default: false, null: false
+    t.string "slug", null: false
+    t.text "system_prompt", default: "", null: false
+    t.datetime "updated_at", null: false
+    t.index ["enabled"], name: "index_agents_on_enabled"
+    t.index ["role"], name: "index_agents_on_role"
+    t.index ["slug"], name: "index_agents_on_slug", unique: true
+  end
+
+  create_table "browser_sessions", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.jsonb "doc", default: {}, null: false
+    t.bigint "forked_from_id"
+    t.string "name"
+    t.bigint "project_id", null: false
+    t.uuid "session_uuid", null: false
+    t.datetime "updated_at", null: false
+    t.bigint "user_id", null: false
+    t.index ["forked_from_id"], name: "index_browser_sessions_on_forked_from_id"
+    t.index ["project_id"], name: "index_browser_sessions_on_project_id"
+    t.index ["session_uuid"], name: "index_browser_sessions_on_session_uuid", unique: true
+    t.index ["user_id"], name: "index_browser_sessions_on_user_id"
+  end
 
   create_table "chat_channels", force: :cascade do |t|
     t.datetime "created_at", null: false
@@ -35,11 +102,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_20_120000) do
   end
 
   create_table "directory_entries", force: :cascade do |t|
+    t.boolean "binary", default: false, null: false
     t.datetime "created_at", null: false
     t.integer "created_by_id"
     t.string "cur_name", null: false
     t.string "ftype", default: "file", null: false
+    t.bigint "last_size"
+    t.datetime "mtime"
     t.integer "owner_id"
+    t.string "posix_group"
+    t.integer "posix_mode"
+    t.string "posix_owner"
     t.bigint "project_id", null: false
     t.string "srcpath", null: false
     t.datetime "updated_at", null: false
@@ -76,6 +149,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_20_120000) do
   end
 
   create_table "project_settings", force: :cascade do |t|
+    t.integer "agent_shell_busy_timeout_s", default: 60, null: false
     t.datetime "created_at", null: false
     t.integer "flush_bytes"
     t.float "flush_interval_s"
@@ -92,6 +166,25 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_20_120000) do
     t.string "name"
     t.string "repo_url"
     t.datetime "updated_at", null: false
+  end
+
+  create_table "terminal_recordings", force: :cascade do |t|
+    t.bigint "byte_count", default: 0, null: false
+    t.integer "cols", default: 80, null: false
+    t.datetime "created_at", null: false
+    t.bigint "created_by_id"
+    t.datetime "ended_at"
+    t.string "file_path", null: false
+    t.bigint "project_id", null: false
+    t.integer "rows", default: 24, null: false
+    t.datetime "started_at", null: false
+    t.string "status", default: "recording", null: false
+    t.integer "terminal_id", null: false
+    t.string "terminal_name"
+    t.datetime "updated_at", null: false
+    t.index ["created_by_id"], name: "index_terminal_recordings_on_created_by_id"
+    t.index ["project_id", "started_at"], name: "index_terminal_recordings_on_project_id_and_started_at"
+    t.index ["project_id"], name: "index_terminal_recordings_on_project_id"
   end
 
   create_table "user_preferences", force: :cascade do |t|
@@ -128,6 +221,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_20_120000) do
     t.index ["reset_password_token"], name: "index_users_on_reset_password_token", unique: true
   end
 
+  add_foreign_key "agent_conversations", "agents"
+  add_foreign_key "agent_conversations", "projects"
+  add_foreign_key "agent_conversations", "users"
+  add_foreign_key "agent_messages", "agent_conversations"
+  add_foreign_key "browser_sessions", "browser_sessions", column: "forked_from_id"
+  add_foreign_key "browser_sessions", "projects"
+  add_foreign_key "browser_sessions", "users"
   add_foreign_key "chat_channels", "projects"
   add_foreign_key "chat_messages", "chat_channels"
   add_foreign_key "chat_messages", "users"
@@ -136,5 +236,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_20_120000) do
   add_foreign_key "project_memberships", "projects"
   add_foreign_key "project_memberships", "users"
   add_foreign_key "project_settings", "projects"
+  add_foreign_key "terminal_recordings", "projects"
+  add_foreign_key "terminal_recordings", "users", column: "created_by_id"
   add_foreign_key "user_preferences", "users"
 end

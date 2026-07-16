@@ -6,6 +6,7 @@ class User < ActiveRecord::Base
   has_many :project_memberships, dependent: :destroy
   has_many :projects,            through:   :project_memberships
   has_many :chat_messages, dependent: :nullify
+  has_many :browser_sessions, dependent: :destroy
   has_one  :user_preference, dependent: :destroy
 
   after_create :create_user_preference
