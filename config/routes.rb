@@ -8,6 +8,15 @@ Rails.application.routes.draw do
   get '/about', to: 'landing#about'
 
   namespace :api, defaults: { format: :json } do
+    # Build/version provenance (public). `common` is the shape both the
+    # workspace server and the control plane implement identically; `server`
+    # adds server-only runtime detail. The client fetches these to fill in the
+    # SHAs it cannot bake itself.
+    namespace :v1 do
+      get 'common/version', to: 'version#common'
+      get 'server/version', to: 'version#server'
+    end
+
     # Authentication endpoints
     post '/login',  to: 'auth#login'
     post '/signup', to: 'auth#signup'

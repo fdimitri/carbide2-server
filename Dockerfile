@@ -58,6 +58,18 @@ RUN bundle install && \
 # --- Final runtime image ---
 FROM base
 
+# Build provenance. ARGs declared before the first FROM are global and not
+# visible inside a stage unless re-declared, so re-declare them here and
+# persist as env for the /api/v1/*/version endpoints to report at runtime.
+ARG META_SHA=unknown
+ARG SERVER_SHA=unknown
+ARG WORKER_SHA=unknown
+ARG BUILD_TIME=unknown
+ENV CARBIDE_META_SHA=$META_SHA \
+    CARBIDE_SERVER_SHA=$SERVER_SHA \
+    CARBIDE_WORKER_SHA=$WORKER_SHA \
+    CARBIDE_BUILD_TIME=$BUILD_TIME
+
 # Copy gems from the build stage
 COPY --from=gems "${BUNDLE_PATH}" "${BUNDLE_PATH}"
 
