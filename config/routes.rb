@@ -16,6 +16,9 @@ Rails.application.routes.draw do
     get   '/preferences', to: 'preferences#show'
     patch '/preferences', to: 'preferences#update'
 
+    # Available SPA client builds (the Decider picker reads this).
+    get   '/clients', to: 'clients#index'
+
     # Agents — workspace-global LLM personas, editable at runtime.
     resources :agents, only: [:index, :show, :update]
 
@@ -61,7 +64,7 @@ Rails.application.routes.draw do
   # Vue Router history-mode fallback — must come last.
   # API, Devise, assets, and the health check are all matched above.
   get '*path', to: 'spa#show', constraints: ->(req) {
-    !req.path.start_with?('/api', '/users', '/rails', '/assets', '/up')
+    !req.path.start_with?('/api', '/users', '/rails', '/assets', '/clients', '/up')
   }
 
   # To re-enable OAuth in the future:
