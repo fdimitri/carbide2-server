@@ -19,9 +19,26 @@ class SpaController < ActionController::Base
   CLIENT_COOKIE = "carbide_client".freeze
 
   def show
+    # An explicit ?client= is the build picker making a choice. Resolve it,
+    # (un)pin the cookie, and 303 to a clean URL so the param never lingers in
+    # the address bar. A "family@sha" spec pins that exact build; a family-only
+    # spec ("carbide2-client" — the picker's "latest" entry) means "track the
+    # newest" and clears any pin. A pick naming another pod's family is not
+    # honored here (it is cleared and we fall back to our own family below).
+    if (spec = params[:client].presence)
+      build = resolve_spec(spec)
+      if build
+        if spec.include?("@") && build.name == registry.default_family
+          pin_cookie(build)
+        else
+          clear_pin_cookie
+        end
+        return redirect_to(clean_path, status: :see_other)
+      end
+    end
+
     build = resolve_build
     if build && (html = build.read_index)
-      pin_cookie(build)
       return render_spa(html)
     end
 
@@ -38,19 +55,20 @@ class SpaController < ActionController::Base
     @registry ||= ClientRegistry.new
   end
 
-  def resolve_build
-    # An explicit ?client= is a deliberate override (the build picker): honor
-    # whatever family/sha it names.
-    if (spec = params[:client].presence)
-      return registry.resolve(spec)
-    end
+  def resolve_spec(spec)
+    registry.resolve(spec)
+  rescue StandardError
+    nil
+  end
 
-    # The pin cookie is shared across the whole origin: the control dashboard
-    # (path "/") and every workspace mount (path "/w/<id>/") all use the same
-    # cookie name, and a path="/" cookie is even sent to "/w/<id>/". So a pin
-    # written by another mount (e.g. the dashboard's carbide2-control build)
-    # must NOT be served here — only honor a cookie pin that resolves within
-    # THIS pod's own family; otherwise serve the newest build of that family.
+  def resolve_build
+    # No explicit pick (handled in #show). The pin cookie is shared across the
+    # whole origin: the control dashboard (path "/") and every workspace mount
+    # (path "/w/<id>/") share the cookie name, and a path="/" cookie even
+    # reaches "/w/<id>/". So only honor a cookie pin that resolves within THIS
+    # pod's own family; otherwise serve the newest build of that family. The
+    # default path intentionally writes NO cookie, so a plain reload after a new
+    # build always tracks the newest — only an explicit pick sticks.
     fam = registry.default_family
     if (spec = request.cookies[CLIENT_COOKIE].presence)
       build = registry.resolve(spec)
@@ -72,6 +90,24 @@ class SpaController < ActionController::Base
     path = prefix.empty? ? "/" : "#{prefix}/"
     response.set_cookie(CLIENT_COOKIE,
                         value: "#{build.name}@#{build.sha}", path: path, same_site: :lax)
+  end
+
+  # Clear any pin at this mount so the loader tracks the newest build again.
+  def clear_pin_cookie
+    prefix = request.headers["X-Forwarded-Prefix"].to_s.sub(%r{/+\z}, "")
+    path = prefix.empty? ? "/" : "#{prefix}/"
+    response.delete_cookie(CLIENT_COOKIE, path: path)
+  end
+
+  # The current request path minus the ?client= param, re-prefixed with the
+  # stripped mount (X-Forwarded-Prefix) so the redirect lands back on this mount
+  # (Traefik strips "/w/<id>" before it reaches us, so request.path lacks it).
+  def clean_path
+    prefix = request.headers["X-Forwarded-Prefix"].to_s.sub(%r{/+\z}, "")
+    rest = request.query_parameters.except("client")
+    path = "#{prefix}#{request.path}"
+    path = "/" if path.empty?
+    rest.empty? ? path : "#{path}?#{rest.to_query}"
   end
 
   # Inject <base href> from Traefik's stripped prefix (e.g. "/w/2") so the

@@ -38,15 +38,33 @@ class SpaControllerTest < ActionDispatch::IntegrationTest
     assert_includes @response.body, %(<base href="/">)
   end
 
-  test "?client selects a specific build and pins a cookie" do
+  test "?client redirects to a clean URL and pins the exact build" do
     write_build("carbide2-client", "old", build_time: "2026-07-18T08:00:00Z", marker: "OLD_BUILD")
     write_build("carbide2-client", "new", build_time: "2026-07-18T20:00:00Z", marker: "NEW_BUILD")
 
     get "/", params: { client: "carbide2-client@old" }
 
+    assert_response :see_other
+    assert_redirected_to "/"
+    assert_equal "carbide2-client@old", @response.cookies["carbide_client"]
+
+    # The pin sticks on the follow-up load.
+    get "/"
     assert_response :success
     assert_includes @response.body, "OLD_BUILD"
-    assert_equal "carbide2-client@old", @response.cookies["carbide_client"]
+  end
+
+  test "a family-only ?client tracks the newest build and clears any pin" do
+    write_build("carbide2-client", "old", build_time: "2026-07-18T08:00:00Z", marker: "OLD_BUILD")
+    write_build("carbide2-client", "new", build_time: "2026-07-18T20:00:00Z", marker: "NEW_BUILD")
+
+    cookies["carbide_client"] = "carbide2-client@old"
+    get "/", params: { client: "carbide2-client" }
+
+    assert_response :see_other
+    assert_redirected_to "/"
+    # Pin cleared -> the follow-up load tracks the newest build.
+    assert @response.cookies["carbide_client"].blank?
   end
 
   test "honours the pin cookie on subsequent loads" do
@@ -75,14 +93,20 @@ class SpaControllerTest < ActionDispatch::IntegrationTest
     assert_not_includes @response.body, "DASHBOARD_BUILD"
   end
 
-  test "an explicit ?client can still cross families (picker override)" do
+  test "an explicit ?client can still cross families but does not pin" do
     write_build("carbide2-client", "ws", build_time: "2026-07-18T20:00:00Z", marker: "WORKSPACE_BUILD")
     write_build("carbide2-control", "ctl", build_time: "2026-07-18T21:00:00Z", marker: "DASHBOARD_BUILD")
 
     get "/", params: { client: "carbide2-control@ctl" }
 
-    assert_response :success
-    assert_includes @response.body, "DASHBOARD_BUILD"
+    # A cross-family pick resolves but is NOT pinned (only the pod's own family
+    # is pinned), and we redirect to a clean URL; the follow-up load falls back
+    # to this pod's own family.
+    assert_response :see_other
+    assert @response.cookies["carbide_client"].blank?
+
+    get "/"
+    assert_includes @response.body, "WORKSPACE_BUILD"
   end
 
   test "scopes the pin cookie to the mount path from X-Forwarded-Prefix" do
@@ -90,10 +114,19 @@ class SpaControllerTest < ActionDispatch::IntegrationTest
 
     get "/", params: { client: "carbide2-client@c1" }, headers: { "X-Forwarded-Prefix" => "/w/2" }
 
-    assert_response :success
+    assert_response :see_other
     set_cookie = @response.headers["Set-Cookie"]
     set_cookie = set_cookie.join("\n") if set_cookie.is_a?(Array)
     assert_match %r{carbide_client=[^\n]*path=/w/2/}i, set_cookie
+  end
+
+  test "redirects back onto the mount path after a pick" do
+    write_build("carbide2-client", "c1", build_time: "2026-07-18T08:00:00Z", marker: "B")
+
+    get "/", params: { client: "carbide2-client@c1" }, headers: { "X-Forwarded-Prefix" => "/w/2" }
+
+    assert_response :see_other
+    assert_redirected_to "/w/2/"
   end
 
   test "injects the workspace prefix from X-Forwarded-Prefix" do
