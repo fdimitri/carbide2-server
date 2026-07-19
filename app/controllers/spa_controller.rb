@@ -39,19 +39,39 @@ class SpaController < ActionController::Base
   end
 
   def resolve_build
-    spec = params[:client].presence || request.cookies[CLIENT_COOKIE].presence
-    registry.resolve(spec)
+    # An explicit ?client= is a deliberate override (the build picker): honor
+    # whatever family/sha it names.
+    if (spec = params[:client].presence)
+      return registry.resolve(spec)
+    end
+
+    # The pin cookie is shared across the whole origin: the control dashboard
+    # (path "/") and every workspace mount (path "/w/<id>/") all use the same
+    # cookie name, and a path="/" cookie is even sent to "/w/<id>/". So a pin
+    # written by another mount (e.g. the dashboard's carbide2-control build)
+    # must NOT be served here — only honor a cookie pin that resolves within
+    # THIS pod's own family; otherwise serve the newest build of that family.
+    fam = registry.default_family
+    if (spec = request.cookies[CLIENT_COOKIE].presence)
+      build = registry.resolve(spec)
+      return build if build && build.name == fam
+    end
+    registry.newest(fam)
   rescue StandardError
     nil
   end
 
   # Pin the resolved build so subsequent history-mode loads stay on it until
   # the user picks another. Written at the Rack level because the app is
-  # api_only (no ActionDispatch::Cookies middleware). Lax same-site keeps it on
-  # normal navigations.
+  # api_only (no ActionDispatch::Cookies middleware). Scoped to the mount path
+  # (X-Forwarded-Prefix) so a workspace's pin stays on that workspace and never
+  # overwrites the dashboard's (or another workspace's) pin. Lax same-site keeps
+  # it on normal navigations.
   def pin_cookie(build)
+    prefix = request.headers["X-Forwarded-Prefix"].to_s.sub(%r{/+\z}, "")
+    path = prefix.empty? ? "/" : "#{prefix}/"
     response.set_cookie(CLIENT_COOKIE,
-                        value: "#{build.name}@#{build.sha}", path: "/", same_site: :lax)
+                        value: "#{build.name}@#{build.sha}", path: path, same_site: :lax)
   end
 
   # Inject <base href> from Traefik's stripped prefix (e.g. "/w/2") so the

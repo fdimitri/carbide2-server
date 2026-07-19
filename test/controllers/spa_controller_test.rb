@@ -60,6 +60,42 @@ class SpaControllerTest < ActionDispatch::IntegrationTest
     assert_includes @response.body, "OLD_BUILD"
   end
 
+  test "ignores a pin cookie for a different family and serves the pod's own family" do
+    # The carbide_client cookie is shared across the origin, so a workspace pod
+    # can receive a pin the dashboard wrote for the control family. It must NOT
+    # serve that build — it should fall back to the newest of its own family.
+    write_build("carbide2-client", "ws", build_time: "2026-07-18T20:00:00Z", marker: "WORKSPACE_BUILD")
+    write_build("carbide2-control", "ctl", build_time: "2026-07-18T21:00:00Z", marker: "DASHBOARD_BUILD")
+
+    cookies["carbide_client"] = "carbide2-control@ctl"
+    get "/"
+
+    assert_response :success
+    assert_includes @response.body, "WORKSPACE_BUILD"
+    assert_not_includes @response.body, "DASHBOARD_BUILD"
+  end
+
+  test "an explicit ?client can still cross families (picker override)" do
+    write_build("carbide2-client", "ws", build_time: "2026-07-18T20:00:00Z", marker: "WORKSPACE_BUILD")
+    write_build("carbide2-control", "ctl", build_time: "2026-07-18T21:00:00Z", marker: "DASHBOARD_BUILD")
+
+    get "/", params: { client: "carbide2-control@ctl" }
+
+    assert_response :success
+    assert_includes @response.body, "DASHBOARD_BUILD"
+  end
+
+  test "scopes the pin cookie to the mount path from X-Forwarded-Prefix" do
+    write_build("carbide2-client", "c1", build_time: "2026-07-18T08:00:00Z", marker: "B")
+
+    get "/", params: { client: "carbide2-client@c1" }, headers: { "X-Forwarded-Prefix" => "/w/2" }
+
+    assert_response :success
+    set_cookie = @response.headers["Set-Cookie"]
+    set_cookie = set_cookie.join("\n") if set_cookie.is_a?(Array)
+    assert_match %r{carbide_client=[^\n]*path=/w/2/}i, set_cookie
+  end
+
   test "injects the workspace prefix from X-Forwarded-Prefix" do
     write_build("carbide2-client", "c1", build_time: "2026-07-18T08:00:00Z", marker: "B")
 
