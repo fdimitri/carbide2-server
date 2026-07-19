@@ -67,6 +67,26 @@ class SpaControllerTest < ActionDispatch::IntegrationTest
     assert @response.cookies["carbide_client"].blank?
   end
 
+  test "?client=latest is a family-agnostic escape hatch that clears a stale pin" do
+    write_build("carbide2-client", "old", build_time: "2026-07-18T08:00:00Z", marker: "OLD_BUILD")
+    write_build("carbide2-client", "new", build_time: "2026-07-18T20:00:00Z", marker: "NEW_BUILD")
+
+    # A pin at a build whose picker is broken leaves no in-app way out; the
+    # reset token clears it without the user knowing the family name.
+    cookies["carbide_client"] = "carbide2-client@old"
+    get "/", params: { client: "latest" }
+
+    assert_response :see_other
+    assert_redirected_to "/"
+    assert @response.cookies["carbide_client"].blank?
+
+    # The follow-up load now tracks the newest build again.
+    get "/"
+    assert_response :success
+    assert_includes @response.body, "NEW_BUILD"
+    assert_not_includes @response.body, "OLD_BUILD"
+  end
+
   test "honours the pin cookie on subsequent loads" do
     write_build("carbide2-client", "old", build_time: "2026-07-18T08:00:00Z", marker: "OLD_BUILD")
     write_build("carbide2-client", "new", build_time: "2026-07-18T20:00:00Z", marker: "NEW_BUILD")

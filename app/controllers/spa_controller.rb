@@ -18,6 +18,13 @@ class SpaController < ActionController::Base
 
   CLIENT_COOKIE = "carbide_client".freeze
 
+  # Family-agnostic escape hatch. A pin can point at a build whose picker is
+  # itself broken, leaving no in-app way to un-pin. Any of these values in
+  # ?client= unconditionally clears the pin and falls back to the newest build,
+  # so a user can always recover by typing "?client=latest" in the URL bar
+  # without editing cookies. Handled before any cookie is honored.
+  RESET_SPECS = %w[latest newest reset clear default].freeze
+
   def show
     # An explicit ?client= is the build picker making a choice. Resolve it,
     # (un)pin the cookie, and 303 to a clean URL so the param never lingers in
@@ -26,6 +33,10 @@ class SpaController < ActionController::Base
     # newest" and clears any pin. A pick naming another pod's family is not
     # honored here (it is cleared and we fall back to our own family below).
     if (spec = params[:client].presence)
+      if RESET_SPECS.include?(spec.downcase)
+        clear_pin_cookie
+        return redirect_to(clean_path, status: :see_other)
+      end
       build = resolve_spec(spec)
       if build
         if spec.include?("@") && build.name == registry.default_family
