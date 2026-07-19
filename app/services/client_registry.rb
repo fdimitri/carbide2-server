@@ -1,31 +1,35 @@
 # Registry of built SPA clients available to this workspace pod.
 #
 # The Decider serves clients from a content-addressed store laid out as
-#   <store>/<family>/<sha>/{index.html, manifest.json, assets/*}
+#   <family>/<sha>/{index.html, manifest.json, assets/*}
 # where <family> is a client name (e.g. "carbide2-client", "carbide2-mobile")
 # and <sha> is the build's content address. Each build is compiled with an
 # absolute Vite base of "/clients/<family>/<sha>/", so its asset URLs are
-# already absolute and resolve to the static tier regardless of which
-# workspace the shell is served from. This registry only has to (a) enumerate
-# the available builds and (b) resolve a pinned build so SpaController can read
-# and serve its index.html.
+# already absolute and resolve to the static tier regardless of which workspace
+# the shell is served from. This registry only has to (a) enumerate the
+# available builds and (b) resolve a pinned build so SpaController can read and
+# serve its index.html.
 #
-# The default backend is the local filesystem (dev-native and tests: the store
-# lives under public/clients so ActionDispatch::Static serves the assets on the
-# same origin). In production the same URL contract "/clients/<family>/<sha>/"
-# is served by a dedicated MinIO-backed static tier via Traefik; a future HTTP
-# backend can be slotted in behind the same public interface.
+# Two backends sit behind the same interface:
+#   - FsBackend (dev-native + tests): the store lives under public/clients so
+#     ActionDispatch::Static serves the assets on the same origin. Selected by
+#     the `store:` kwarg or CARBIDE_CLIENT_STORE.
+#   - HttpBackend (in-cluster): the store is the MinIO static tier reached over
+#     HTTP. Enumeration reads a `registry.json` index object (maintained by
+#     scripts/build-client), and index.html is fetched per build. Selected by
+#     the `tier_url:` kwarg or CARBIDE_CLIENT_TIER_URL, e.g.
+#     "http://minio.carbide-system.svc.cluster.local:9000/clients".
+# The public URL contract "/clients/<family>/<sha>/" is identical either way.
 class ClientRegistry
-  # A single resolved build. `dir` is the on-disk directory backing it.
-  Build = Struct.new(:name, :sha, :dir, :manifest, keyword_init: true) do
+  # A single resolved build. Reads through the backend that produced it.
+  Build = Struct.new(:name, :sha, :manifest, :backend, keyword_init: true) do
     # Absolute, origin-relative base under which this build's assets live.
     def public_base = "/clients/#{name}/#{sha}/"
-    def index_path  = File.join(dir, "index.html")
-    def index_exist? = File.file?(index_path)
-    def read_index   = File.read(index_path)
     def label        = manifest["label"].presence || sha
     def build_time   = manifest["build_time"]
     def floors       = manifest["floors"] || {}
+    def index_exist? = backend.index_exist?(name, sha)
+    def read_index   = backend.read_index(name, sha)
 
     def as_json_h
       { name:, sha:, label:, build_time:, base: public_base, floors: }
@@ -34,38 +38,46 @@ class ClientRegistry
 
   DEFAULT_FAMILY = "carbide2-client"
 
-  def initialize(store: nil, default_family: nil)
-    @store = (store || ENV["CARBIDE_CLIENT_STORE"].presence ||
-              Rails.root.join("public", "clients").to_s)
+  def initialize(store: nil, tier_url: nil, default_family: nil)
     @default_family = default_family || ENV["CARBIDE_CLIENT_DEFAULT"].presence
+    store    ||= ENV["CARBIDE_CLIENT_STORE"].presence
+    tier_url ||= ENV["CARBIDE_CLIENT_TIER_URL"].presence
+
+    # An explicit/env store always means the local FS backend (dev + tests).
+    # Otherwise a tier URL selects the in-cluster HTTP backend. With neither,
+    # fall back to the conventional public/clients store.
+    @backend =
+      if store.nil? && tier_url
+        HttpBackend.new(tier_url)
+      else
+        FsBackend.new(store || Rails.root.join("public", "clients").to_s)
+      end
   end
 
-  def store_present? = File.directory?(@store)
+  def store_present? = @backend.available?
+
+  # All builds across all families (memoized per instance so a single request
+  # hits the backend once).
+  def all_builds
+    @all_builds ||= @backend.entries.map do |e|
+      Build.new(name: e[:name], sha: e[:sha], manifest: e[:manifest], backend: @backend)
+    end
+  end
 
   # Client family names present in the store (sorted).
   def families
-    return [] unless store_present?
-
-    Dir.children(@store).select { |c| File.directory?(File.join(@store, c)) }.sort
+    all_builds.map(&:name).uniq.sort
   end
 
-  # Builds for a family, newest first (by manifest build_time, then dir mtime).
+  # Builds for a family, newest first (by manifest build_time, then sha).
   def builds(name)
-    dir = File.join(@store, name.to_s)
-    return [] unless File.directory?(dir)
-
-    Dir.children(dir).filter_map { |sha| build_for(name, sha) }
-       .sort_by { |b| [b.build_time.to_s, File.mtime(b.dir).to_f] }
-       .reverse
+    all_builds.select { |b| b.name == name.to_s }
+              .sort_by { |b| [b.build_time.to_s, b.sha] }
+              .reverse
   end
-
-  def all_builds = families.flat_map { |f| builds(f) }
 
   def build_for(name, sha)
-    bdir = File.join(@store, name.to_s, sha.to_s)
-    return nil unless File.directory?(bdir)
-
-    Build.new(name: name.to_s, sha: sha.to_s, dir: bdir, manifest: read_manifest(bdir))
+    all_builds.find { |b| b.name == name.to_s && b.sha == sha.to_s }
   end
 
   # The family to serve when no explicit pin is given.
@@ -101,14 +113,105 @@ class ClientRegistry
     all_builds.find { |b| b.sha == spec || b.sha.start_with?(spec) }
   end
 
-  private
+  # Local filesystem store: <store>/<family>/<sha>/{index.html,manifest.json}.
+  class FsBackend
+    def initialize(store)
+      @store = store.to_s
+    end
 
-  def read_manifest(bdir)
-    path = File.join(bdir, "manifest.json")
-    return {} unless File.file?(path)
+    def available? = File.directory?(@store)
 
-    JSON.parse(File.read(path))
-  rescue JSON::ParserError
-    {}
+    def entries
+      return [] unless available?
+
+      Dir.children(@store).select { |c| File.directory?(File.join(@store, c)) }.flat_map do |name|
+        fdir = File.join(@store, name)
+        Dir.children(fdir).select { |s| File.directory?(File.join(fdir, s)) }.map do |sha|
+          { name: name, sha: sha, manifest: read_manifest(File.join(fdir, sha)) }
+        end
+      end
+    end
+
+    def index_exist?(name, sha) = File.file?(index_path(name, sha))
+
+    def read_index(name, sha)
+      path = index_path(name, sha)
+      File.file?(path) ? File.read(path) : nil
+    end
+
+    private
+
+    def index_path(name, sha) = File.join(@store, name.to_s, sha.to_s, "index.html")
+
+    def read_manifest(dir)
+      path = File.join(dir, "manifest.json")
+      return {} unless File.file?(path)
+
+      JSON.parse(File.read(path))
+    rescue JSON::ParserError
+      {}
+    end
+  end
+
+  # In-cluster MinIO static tier over HTTP. Enumeration reads registry.json;
+  # index.html is fetched per build. Anonymous GET is enough (the bucket is
+  # download-public). Every network op degrades to nil/[]/false on failure so a
+  # missing tier never raises into a request.
+  class HttpBackend
+    require "net/http"
+    require "uri"
+
+    OPEN_TIMEOUT = 2
+    READ_TIMEOUT = 5
+
+    def initialize(base)
+      @base = base.to_s.sub(%r{/+\z}, "")
+    end
+
+    def available? = true
+
+    def entries
+      body = http_get("#{@base}/registry.json")
+      return [] unless body
+
+      idx = JSON.parse(body)
+      return [] unless idx.is_a?(Hash)
+
+      (idx["families"] || {}).flat_map do |name, builds|
+        Array(builds).map { |m| { name: name.to_s, sha: m["sha"].to_s, manifest: m } }
+      end
+    rescue JSON::ParserError
+      []
+    end
+
+    def index_exist?(name, sha)
+      http_head("#{@base}/#{name}/#{sha}/index.html")
+    end
+
+    def read_index(name, sha)
+      http_get("#{@base}/#{name}/#{sha}/index.html")
+    end
+
+    private
+
+    def http_get(url)
+      resp = http_request(url, Net::HTTP::Get)
+      resp.is_a?(Net::HTTPSuccess) ? resp.body : nil
+    end
+
+    def http_head(url)
+      http_request(url, Net::HTTP::Head).is_a?(Net::HTTPSuccess)
+    end
+
+    def http_request(url, klass)
+      uri = URI.parse(url)
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = (uri.scheme == "https")
+      http.open_timeout = OPEN_TIMEOUT
+      http.read_timeout = READ_TIMEOUT
+      http.request(klass.new(uri.request_uri))
+    rescue StandardError
+      nil
+    end
   end
 end

@@ -57,8 +57,7 @@ ingress:
   # Host can be left empty for path-only matching (works with curl --header
   # 'Host: anything' or by hitting the LB IP directly).
   host: ""
-  # External port the browser reaches Traefik on. Used to tell Vite's HMR
-  # client which port to connect back to (the dev k3d cluster maps host
+  # External port the browser reaches Traefik on (the dev k3d cluster maps host
   # :8080 -> Traefik :80, so the browser loads pages from :8080).
   publicPort: 8080
   # External HTTPS port the browser reaches Traefik on. The HTTP→HTTPS redirect
@@ -84,12 +83,18 @@ ingress:
 # Per-pod env. Anything here is merged into the Deployment's env list verbatim.
 extraEnv: []
 
+# The Decider: client static tier. The SPA is not baked into the image; the
+# loader fetches the pinned build's index.html from the MinIO-backed static
+# tier over in-cluster HTTP (CARBIDE_CLIENT_TIER_URL). Browsers load the assets
+# via Traefik at /clients/<family>/<sha>/. Uploads are done by
+# scripts/build-client (see scripts/deploy.rb).
+clientTier:
+  url: "http://minio.carbide-system.svc.cluster.local:9000/clients"
+
 # Rails-side knobs.
 rails:
   env: development
   port: 3000
-  # Vite dev server (kept in-pod for dev mode; will be split out in prod).
-  vitePort: 5173
   # EventMachine worker WS port.
   workerPort: 8080
   # Run db:seed in the migrate init container on every pod start. Idempotent

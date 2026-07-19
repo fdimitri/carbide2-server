@@ -1,8 +1,13 @@
 # syntax=docker/dockerfile:1
 # check=error=true
 #
-# Carbide2 single-image build: Rails API + EventMachine worker + Vite dev server
-# all run from one container via Foreman + Procfile.
+# Carbide2 single-image build: Rails API + EventMachine worker run from one
+# container via Foreman + Procfile.
+#
+# The SPA client is NOT baked into this image. Clients live only in the MinIO
+# static tier (built + uploaded by the meta-repo scripts/build-client and
+# deploy.rb), served at /clients/<family>/<sha>/. The Rails SpaController is a
+# loader that resolves + serves the pinned client's index.html at request time.
 #
 # Build:
 #   docker build -t carbide2 .
@@ -50,55 +55,15 @@ COPY Gemfile Gemfile.lock ./
 RUN bundle install && \
     rm -rf "${BUNDLE_PATH}"/ruby/*/cache "${BUNDLE_PATH}"/ruby/*/bundler/gems/*/.git
 
-# --- Frontend build: compile Vue SPA into public/ ---
-#
-# carbide2-server does NOT track a client commit hash (no submodule). The
-# meta-repo `carbide2` is the single source of truth for client versions
-# and is responsible for invoking docker build with the right context:
-#
-#   docker build -t carbide2 \
-#       --build-context client=../carbide2-client \
-#       ./carbide2-server
-#
-# Requires BuildKit (`docker buildx` or DOCKER_BUILDKIT=1).
-FROM node:22-alpine AS dashboard-build
-ARG META_SHA
-ARG CLIENT_SHA
-ARG SERVER_SHA
-ARG WORKER_SHA
-ARG BUILD_TIME
-WORKDIR /app
-COPY --from=client package.json package-lock.json* ./
-RUN npm ci --no-audit --no-fund
-COPY --from=client . ./
-# Pass --base via CLI (rather than ENV VITE_BASE) because buildkit was
-# silently dropping the './' value in some setups. Relative asset URLs
-# let the same bundle work under any /w/<id>/ prefix once Traefik strips it.
-ENV VITE_CARBIDE_MODE=workspace
-ENV VITE_APP_META_SHA=$META_SHA
-ENV VITE_APP_CLIENT_SHA=$CLIENT_SHA
-ENV VITE_APP_SERVER_SHA=$SERVER_SHA
-ENV VITE_APP_WORKER_SHA=$WORKER_SHA
-ENV VITE_APP_BUILD_TIME=$BUILD_TIME
-RUN npx vite build --base=./
-
 # --- Final runtime image ---
 FROM base
 
 # Copy gems from the build stage
 COPY --from=gems "${BUNDLE_PATH}" "${BUNDLE_PATH}"
 
-# Copy compiled SPA assets into Rails public/ so ActionDispatch::Static
-# serves them. index.html is NOT placed under public/ — SpaController
-# reads it from app/spa/ and injects <base href> from X-Forwarded-Prefix
-# at request time so the SPA mounts correctly under /w/<id>/.
-COPY --from=dashboard-build /app/dist/assets /app/public/assets
-COPY --from=dashboard-build /app/dist/favicon.svg /app/public/favicon.svg
-COPY --from=dashboard-build /app/dist/index.html /app/spa/index.html
-
-# Copy application source (server, configs). The client tree is
-# already populated above from the frontend stage; we copy the rest of
-# the server checkout last so app code changes don't bust the npm cache.
+# Copy application source (server, configs). We copy the server checkout last so
+# app code changes don't bust the earlier layers. No SPA client is copied in —
+# it is served from the MinIO static tier, not from this image.
 COPY . .
 
 # Worker comes from its own repo (carbide2-worker). In the server checkout
@@ -112,16 +77,15 @@ COPY --from=worker . /app/worker/
 # Bootsnap precompile for faster boot
 RUN bundle exec bootsnap precompile -j 1 --gemfile app/ lib/ || true
 
-# Foreman launches Rails, worker, and Vite together per Procfile.
+# Foreman launches Rails and the worker together per Procfile.
 # Tini is PID 1 for clean signal forwarding.
 # RAILS_ENV is intentionally NOT set here — docker-compose.yml provides the
 # runtime default (currently 'development'). Override via the compose file or
 # `docker run -e RAILS_ENV=production` for production deploys.
 ENV PORT=3000 \
-    WORKER_PORT=8080 \
-    VITE_PORT=5173
+    WORKER_PORT=8080
 
-EXPOSE 3000 8080 5173
+EXPOSE 3000 8080
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/bin/docker-entrypoint"]
 CMD ["bundle", "exec", "foreman", "start", "-f", "Procfile"]

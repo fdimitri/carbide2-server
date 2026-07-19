@@ -4,16 +4,15 @@
 # ActionDispatch::Static before the router; this controller only runs for SPA
 # route fallbacks.
 #
-# The Decider: when a content-addressed client store is present (see
-# ClientRegistry) this resolves a *pinned* build and serves that build's
-# index.html. The choice comes from a `?client=` query param (which also pins a
-# cookie for subsequent navigations) or the `carbide_client` cookie, defaulting
-# to the newest build of the default family. The build's assets are already
-# absolute (/clients/<family>/<sha>/...), so we only inject <base href> for the
-# workspace prefix, which the client uses to derive its API/WS/token-scope — NOT
-# its asset URLs. When no store is present we fall back to the single
-# spa/index.html baked by the Dockerfile dashboard-build stage (server-only and
-# legacy images), preserving prior behaviour.
+# The Decider: the client is NOT baked into the image. It lives only in the
+# content-addressed store (see ClientRegistry) — the MinIO static tier in
+# cluster, or public/clients in dev-native. This loader resolves a *pinned*
+# build and serves that build's index.html. The choice comes from a `?client=`
+# query param (which also pins a cookie for subsequent navigations) or the
+# `carbide_client` cookie, defaulting to the newest build of the default family.
+# The build's assets are already absolute (/clients/<family>/<sha>/...), so we
+# only inject <base href> for the workspace prefix, which the client uses to
+# derive its API/WS/token-scope — NOT its asset URLs.
 class SpaController < ActionController::Base
   skip_forgery_protection
 
@@ -21,18 +20,15 @@ class SpaController < ActionController::Base
 
   def show
     build = resolve_build
-    if build&.index_exist?
+    if build && (html = build.read_index)
       pin_cookie(build)
-      return render_spa(build.read_index)
+      return render_spa(html)
     end
-
-    # Legacy / server-only fallback: a single baked build, or none.
-    legacy = Rails.root.join("spa", "index.html")
-    return render_spa(File.read(legacy)) if File.exist?(legacy)
 
     return redirect_to("/about") if request.path == "/"
 
-    render plain: "workspace SPA not built; see Dockerfile dashboard-build stage",
+    render plain: "workspace SPA not available; build + upload it to the static tier " \
+                  "(scripts/build-client)",
            status: :not_found
   end
 

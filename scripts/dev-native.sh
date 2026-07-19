@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
 # dev.sh — start all three Carbide2 dev processes
+#
+# ⚠ DEPRECATED / DEFUNCT (2026-07-18) — DO NOT USE, UNTESTED.
+# This "native" (non-container) runner predates the Docker/k3d switch and the
+# removal of the client from carbide2-server. It still tries to launch a Vite
+# dev server from a sibling carbide2-client checkout (`npm run dev`), a flow
+# that no longer reflects how the stack runs: the pod's Procfile runs only
+# rails + worker, and the client is built/served out of band (moving to the
+# MinIO-backed static tier — see the Decider work). Nothing references this
+# script. Kept only for historical reference; expect it to be broken.
+# Current dev/deploy path: meta-repo scripts/deploy.rb (see DEPLOY-k3d.md).
 export CARBIDE_USE_DOCKER=1
 export CARBIDE_SHELL_IMAGE=carbide2-shell
 

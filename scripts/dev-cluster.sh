@@ -91,6 +91,20 @@ kubectl -n carbide-system wait --for=condition=Ready cluster/carbide-pg --timeou
   warn "postgres cluster not Ready yet; check 'kubectl -n carbide-system describe cluster carbide-pg'"
 }
 
+# --- MinIO (object store + static tier for client builds) -------------------
+# Holds every built SPA client at clients/<family>/<sha>/*. The dedicated
+# static tier: Traefik routes /clients/ straight to the MinIO service (see the
+# workspace chart IngressRoute), and the `clients` bucket is anonymous-read so
+# assets serve without credentials. Clients are uploaded by the meta-repo
+# scripts/build-client (and by deploy.rb for the pinned client).
+log "applying MinIO (object store + client static tier)"
+kubectl apply -f "$(dirname "$0")/../deploy/minio.yaml"
+
+log "waiting for MinIO to be ready..."
+kubectl -n carbide-system rollout status deploy/minio --timeout=3m || {
+  warn "MinIO not Ready yet; check 'kubectl -n carbide-system describe deploy minio'"
+}
+
 # --- LM Studio relay --------------------------------------------------------
 # Best-effort: (re)start the socat relay that lets ws-* pods reach
 # host-localhost LM Studio via host.k3d.internal:11234. The relay binds the

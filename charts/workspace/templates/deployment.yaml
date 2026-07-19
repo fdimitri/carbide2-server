@@ -77,8 +77,6 @@ spec:
               containerPort: {{ .Values.rails.port }}
             - name: worker
               containerPort: {{ .Values.rails.workerPort }}
-            - name: vite
-              containerPort: {{ .Values.rails.vitePort }}
           env:
             - name: SKIP_DB_PREPARE
               value: "1"
@@ -90,10 +88,16 @@ spec:
               value: {{ .Values.rails.port | quote }}
             - name: WORKER_PORT
               value: {{ .Values.rails.workerPort | quote }}
-            - name: VITE_PORT
-              value: {{ .Values.rails.vitePort | quote }}
             - name: PROJECTS_ROOT
               value: /srv/projects
+
+            # --- The Decider: client static tier (loader HTTP backend) ---
+            # The SPA is NOT baked into this image. The loader (SpaController /
+            # ClientRegistry) fetches the pinned build's index.html from the
+            # MinIO-backed static tier over in-cluster HTTP. Assets themselves
+            # are served to browsers by Traefik at /clients/<family>/<sha>/.
+            - name: CARBIDE_CLIENT_TIER_URL
+              value: {{ .Values.clientTier.url | quote }}
 
             # Persistent worker log on the PVC: survives pod reaping/rollout so
             # an overnight death is still debuggable (kubectl logs is gone once
@@ -127,14 +131,6 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.jwt.secretName }}
                   key: secret
-
-            # --- Vite (served behind the ingress, NOT stripped) ---
-            - name: VITE_BASE
-              value: {{ printf "%s/" (include "workspace.pathPrefix" .) | quote }}
-            - name: VITE_HMR_CLIENT_PORT
-              value: {{ .Values.ingress.publicPort | quote }}
-            - name: VITE_API_PROXY
-              value: "http://127.0.0.1:{{ .Values.rails.port }}"
 
             # --- Rails host allowlist (LAN + cluster DNS + ingress host) ---
             - name: RAILS_DEV_HOSTS
