@@ -113,6 +113,53 @@ nodes automatically, so workspace pods scheduled on an agent reach the shared
 Postgres and the MinIO client tier without extra config. Uninstall an agent with
 `sudo /usr/local/bin/k3s-agent-uninstall.sh`.
 
+## Multi-node: a dedicated build/registry host (no k3s)
+
+The default flow co-locates the registry + image builds on the k3s server. If you
+want the (slow, from-source) image builds and the registry on a **separate,
+beefier box that runs no k3s** — e.g. a WSL2 machine — split the deploy into two
+roles with `--publish-only` / `--external-registry`:
+
+**Build/registry host** (`--publish-only`, no k3s/helm — just docker + mkcert):
+
+```sh
+cd ~/repos/carbide2 && git pull && git submodule update --init --recursive
+./scripts/deploy.rb --publish-only --registry-host <build-host-fqdn> --ref <ref>
+```
+
+This stands up the `registry:2` container, builds the SHA-tagged images, and
+pushes them — then stops. Copy this host's mkcert root CA to each k3s node:
+
+```sh
+cp "$(mkcert -CAROOT)/rootCA.pem" ./carbide-rootCA.pem   # then scp to each node
+```
+
+**k3s server** (`--external-registry` — pulls the already-pushed images, skips the
+local registry + build):
+
+```sh
+# carbide-rootCA.pem copied here first
+cd ~/repos/carbide2 && git pull && git submodule update --init --recursive
+./scripts/deploy.rb --kube-backend=k3s --external-registry \
+  --registry-host <build-host-fqdn> --registry-ca ./carbide-rootCA.pem \
+  --ref <ref> --public-host <browser-fqdn>
+```
+
+The server still builds+uploads the SPA client to in-cluster MinIO (that needs
+cluster access, so it can't run on the build host) — the heavy *image* builds are
+what moved to the build box. **Agents** then join with `dev-agent-k3s.sh` exactly
+as above, pointing `--registry-host` at the build host.
+
+Requirements for the split:
+
+- The registry FQDN (`--registry-host`) must **resolve and be reachable on
+  `:5000` from every k3s node** (server + agents), pointing at the build host —
+  independent of the browser `--public-host` name, which only the browser needs.
+- If the registry lives inside **WSL2**, its NAT means remote nodes can't reach it
+  by the WSL IP directly: add a Windows-side `netsh interface portproxy` (or use
+  mirrored networking) forwarding `:5000` to the WSL VM, and point the registry
+  FQDN at the Windows host.
+
 ## The "show me everything" commands
 
 Most useful inspection commands, roughly in the order you'd reach for them:
