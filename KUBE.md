@@ -155,10 +155,10 @@ Requirements for the split:
 - The registry FQDN (`--registry-host`) must **resolve and be reachable on
   `:5000` from every k3s node** (server + agents), pointing at the build host —
   independent of the browser `--public-host` name, which only the browser needs.
-- If the registry lives inside **WSL2**, its NAT means remote nodes can't reach it
-  by the WSL IP directly: add a Windows-side `netsh interface portproxy` (or use
-  mirrored networking) forwarding `:5000` to the WSL VM, and point the registry
-  FQDN at the Windows host.
+- With **WSL2 mirrored networking** the VM shares the Windows host's network, so
+  the registry port is reachable directly — nothing extra to do. (Only WSL2's
+  default *NAT* mode needs a Windows-side `netsh interface portproxy` forwarding
+  `:5000` into the VM.)
 
 ## The "show me everything" commands
 
