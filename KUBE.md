@@ -40,6 +40,43 @@ see what's going on.
 | `scripts/test-substrate.sh`                    | Runs all 4 test layers in order.              |
 | `.github/workflows/substrate-tests.yml`        | CI: builds everything from scratch and runs the orchestrator. |
 
+## Multi-node: the self-hosted registry
+
+Single-node dev (k3d, or one-node k3s) needs no registry — deploy.rb imports the
+built images straight into that node's containerd. But a **multi-node** cluster
+schedules pods on nodes that never saw `docker build`, so those pods
+`ImagePullBackOff`. The fix is a self-hosted registry every node pulls from.
+
+Enable it by passing `--registry-host` to deploy.rb (opt-in; unset = the
+single-node import path):
+
+```sh
+# On the deploy host (also the k3s server node):
+./scripts/deploy.rb --kube-backend=k3s --registry-host <this-host-fqdn>
+```
+
+What that does:
+
+- Brings up a standalone `registry:2` container on the deploy host over TLS
+  (cert minted from the same carbide mkcert root CA), independent of the cluster.
+- Builds **immutable, per-component SHA-tagged** images and pushes them:
+  `carbide2:<server>-<worker>`, `carbide2-control:<control>`,
+  `carbide2-shell:<server>`. Re-deploys skip build+push when the tag already
+  exists.
+- Pins those tags into the control-plane chart, so the operator stamps them onto
+  workspace/shell pods and every node pulls the same image.
+
+**One-time per node** — each k3s node (server **and** every agent) must trust the
+registry CA. The server node is handled by `dev-cluster-k3s.sh`; for agents, copy
+the deploy host's `carbide-rootCA.pem` to the node and run:
+
+```sh
+./scripts/setmeup.sh --kube-backend=k3s --registry-host <deploy-host>:5000 --registry-ca ./carbide-rootCA.pem
+```
+
+That installs the CA into the OS trust store and writes
+`/etc/rancher/k3s/registries.yaml` so containerd can pull over TLS.
+
 ## The "show me everything" commands
 
 Most useful inspection commands, roughly in the order you'd reach for them:

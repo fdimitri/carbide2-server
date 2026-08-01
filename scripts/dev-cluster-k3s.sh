@@ -24,6 +24,11 @@ HTTP_PORT="${HTTP_PORT:-80}"
 HTTPS_PORT="${HTTPS_PORT:-443}"
 # Pin the same k3s line k3d v5.8.3 ships, so both backends behave alike.
 K3S_CHANNEL="${K3S_CHANNEL:-stable}"
+# Optional self-hosted registry this node should trust+pull from. deploy.rb sets
+# these in registry mode; unset = no registry (containerd-import path).
+REGISTRY_HOST="${REGISTRY_HOST:-}"
+REGISTRY_PORT="${REGISTRY_PORT:-5000}"
+REGISTRY_CA="${REGISTRY_CA:-}"
 
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m %s\n' "$*" >&2; }
@@ -37,6 +42,37 @@ require helm
 if [[ $EUID -eq 0 ]]; then
   warn "run as your normal user, not root — this script uses sudo where needed."
   exit 1
+fi
+
+# Trust a self-hosted registry on this (primary) node: pin its CA in k3s
+# registries.yaml so containerd can pull over TLS. Written before k3s starts so
+# a fresh install picks it up; on an existing cluster we restart k3s.
+configure_registry_trust() {
+  local host="$1" port="$2" ca="$3"
+  local endpoint="$host"
+  [[ "$host" == *:* ]] || endpoint="$host:$port"
+  if [[ ! -f "$ca" ]]; then
+    warn "registry CA not found: $ca — skipping registry trust (pods may ImagePullBackOff)"
+    return
+  fi
+  log "trusting registry $endpoint on this node (registries.yaml)"
+  local ca_dest="/etc/rancher/k3s/carbide-registry-ca.pem"
+  sudo mkdir -p /etc/rancher/k3s
+  sudo install -m 0644 "$ca" "$ca_dest"
+  sudo tee /etc/rancher/k3s/registries.yaml >/dev/null <<YAML
+configs:
+  "$endpoint":
+    tls:
+      ca_file: "$ca_dest"
+YAML
+  if systemctl is-active --quiet k3s 2>/dev/null; then
+    log "restarting k3s to pick up registries.yaml"
+    sudo systemctl restart k3s
+  fi
+}
+
+if [[ -n "$REGISTRY_HOST" ]]; then
+  configure_registry_trust "$REGISTRY_HOST" "$REGISTRY_PORT" "$REGISTRY_CA"
 fi
 
 # --- cluster ----------------------------------------------------------------

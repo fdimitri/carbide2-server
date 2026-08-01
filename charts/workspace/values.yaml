@@ -13,6 +13,9 @@
 
 projectId: 1
 
+# NOTE: the live path is the control-plane operator (which stamps the workspace
+# image from its own chart values, overridden by scripts/deploy.rb in registry
+# mode). These values only apply to a standalone `helm install` of this chart.
 image:
   repository: carbide2
   tag: dev
