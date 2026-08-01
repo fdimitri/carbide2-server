@@ -31,7 +31,8 @@ see what's going on.
 
 | Path                                           | What it is                                    |
 | ---------------------------------------------- | --------------------------------------------- |
-| `scripts/dev-cluster.sh`                       | Brings up k3d + Traefik + CNPG + Postgres.    |
+| `scripts/dev-cluster-k3d.sh`                   | Brings up k3d + Traefik + CNPG + Postgres (default).  |
+| `scripts/dev-cluster-k3s.sh`                   | Same stack on host-native k3s (`--kube-backend=k3s`). |
 | `deploy/cnpg-cluster.yaml`                     | The shared `carbide-pg` Postgres definition.  |
 | `charts/workspace/`                            | Per-workspace Helm chart (deploy + svc + ingress + PVC + test pod). |
 | `scripts/smoke-test.sh`                        | HTTP probe of `/up` via Traefik.              |

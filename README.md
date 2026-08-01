@@ -99,7 +99,8 @@ git clone --recurse-submodules https://github.com/fdimitri/carbide2-server.git
 cd carbide2-server
 
 # Bring up k3d cluster + Traefik + CNPG + Postgres (~5 min first time)
-./scripts/dev-cluster.sh
+./scripts/dev-cluster-k3d.sh
+# (host-native k3s alternative: ./scripts/dev-cluster-k3s.sh)
 
 # Build and import the workspace image
 docker build -t carbide2:dev .
@@ -190,7 +191,7 @@ charts/workspace/ Helm chart for per-workspace k8s deployment
 config/           Rails config, routes, credentials
 db/               Migrations, seeds, schema
 deploy/           CNPG cluster manifest
-scripts/          dev-cluster.sh, test-substrate.sh, import-host-dir.sh, etc.
+scripts/          dev-cluster-k3d.sh, dev-cluster-k3s.sh, test-substrate.sh, import-host-dir.sh, etc.
 ```
 
 ---

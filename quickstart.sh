@@ -13,7 +13,8 @@
 #
 # This brings up the simple docker-compose stack (single carbide container
 # + postgres). For the Kubernetes/k3d substrate that mirrors production,
-# use scripts/dev-cluster.sh instead. The two stacks are mutually
+# use scripts/dev-cluster-k3d.sh instead (or dev-cluster-k3s.sh for
+# host-native k3s). The two stacks are mutually
 # exclusive; this script refuses to run if a carbide-* k3d cluster exists
 # unless you pass --yes-i-really-know-what-im-doing.
 
@@ -55,7 +56,7 @@ fi
 # ---------------------------------------------------------------------------
 # 1b. Refuse to clobber a k3d-based dev install.
 # ---------------------------------------------------------------------------
-# The docker-compose stack and the k3d substrate (scripts/dev-cluster.sh +
+# The docker-compose stack and the k3d substrate (scripts/dev-cluster-k3d.sh +
 # charts/workspace) are two PARALLEL deployments. Running both at once works
 # but is almost always a mistake — you end up with two carbide instances,
 # two postgres databases, and confusing port conflicts (both want :3000,
@@ -71,7 +72,7 @@ if k3d_in_use && [[ $FORCE_OVER_K3D -ne 1 ]]; then
 [quickstart] ERROR: detected an existing k3d cluster (carbide-*).
 
   You appear to be running the Kubernetes/k3d dev substrate
-  (scripts/dev-cluster.sh + charts/workspace). The docker-compose
+  (scripts/dev-cluster-k3d.sh + charts/workspace). The docker-compose
   stack this script brings up is a SEPARATE all-in-one deployment;
   running both at once will fight over ports 3000/5173/8080 and
   give you two databases.
