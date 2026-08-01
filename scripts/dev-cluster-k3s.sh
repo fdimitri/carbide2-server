@@ -29,6 +29,10 @@ K3S_CHANNEL="${K3S_CHANNEL:-stable}"
 REGISTRY_HOST="${REGISTRY_HOST:-}"
 REGISTRY_PORT="${REGISTRY_PORT:-5000}"
 REGISTRY_CA="${REGISTRY_CA:-}"
+# Extra names to bake into the API-server serving cert (space/comma separated),
+# so remote kubectl can reach this server by FQDN, not just its short hostname.
+# The host's own FQDN is added automatically. Only applied on fresh install.
+K3S_TLS_SANS="${K3S_TLS_SANS:-}"
 
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m %s\n' "$*" >&2; }
@@ -87,12 +91,18 @@ if k3s_node_ready; then
   log "k3s already running with a Ready node, skipping install"
 else
   log "installing k3s (${K3S_CHANNEL} channel) — disabling bundled traefik + local-storage"
+  # Bake extra SANs (this host's FQDN + any K3S_TLS_SANS) into the API cert so
+  # remote kubectl can verify TLS when reaching the server by FQDN.
+  tls_san_args=""
+  for san in "$(hostname -f 2>/dev/null || true)" ${K3S_TLS_SANS//,/ }; do
+    [[ -n "$san" ]] && tls_san_args+=" --tls-san=$san"
+  done
   # --write-kubeconfig-mode 644 so non-root kubectl/helm can read the kubeconfig
   # we copy below. --disable mirrors the k3d path (we bring our own Traefik +
   # local-path); ServiceLB stays enabled for type=LoadBalancer.
   curl -sfL https://get.k3s.io | \
     INSTALL_K3S_CHANNEL="${K3S_CHANNEL}" \
-    INSTALL_K3S_EXEC="--disable=traefik --disable=local-storage --write-kubeconfig-mode=644" \
+    INSTALL_K3S_EXEC="--disable=traefik --disable=local-storage --write-kubeconfig-mode=644${tls_san_args}" \
     sh -s -
 fi
 
