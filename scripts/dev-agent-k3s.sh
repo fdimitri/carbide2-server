@@ -43,19 +43,26 @@ REGISTRY_HOST="${REGISTRY_HOST:-}"
 REGISTRY_PORT="${REGISTRY_PORT:-5000}"
 REGISTRY_CA="${REGISTRY_CA:-}"
 
-for arg in "$@"; do
-  case "$arg" in
-    --server-url=*)    K3S_URL="${arg#*=}" ;;
-    --token=*)         K3S_TOKEN="${arg#*=}" ;;
-    --token-file=*)    K3S_TOKEN="$(cat "${arg#*=}")" ;;
-    --registry-host=*) REGISTRY_HOST="${arg#*=}" ;;
-    --registry-port=*) REGISTRY_PORT="${arg#*=}" ;;
-    --registry-ca=*)   REGISTRY_CA="${arg#*=}" ;;
+# Accept both --flag value and --flag=value forms.
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --server-url)    K3S_URL="$2";            shift 2 ;;
+    --server-url=*)  K3S_URL="${1#*=}";       shift ;;
+    --token)         K3S_TOKEN="$2";          shift 2 ;;
+    --token=*)       K3S_TOKEN="${1#*=}";     shift ;;
+    --token-file)    K3S_TOKEN="$(cat "$2")"; shift 2 ;;
+    --token-file=*)  K3S_TOKEN="$(cat "${1#*=}")"; shift ;;
+    --registry-host)   REGISTRY_HOST="$2";      shift 2 ;;
+    --registry-host=*) REGISTRY_HOST="${1#*=}"; shift ;;
+    --registry-port)   REGISTRY_PORT="$2";      shift 2 ;;
+    --registry-port=*) REGISTRY_PORT="${1#*=}"; shift ;;
+    --registry-ca)     REGISTRY_CA="$2";        shift 2 ;;
+    --registry-ca=*)   REGISTRY_CA="${1#*=}";   shift ;;
     -h|--help)
       sed -n '2,/END-OF-HELP/p' "$0" | sed -e '/END-OF-HELP/d' -e 's/^# \{0,1\}//'
       exit 0
       ;;
-    *) echo "dev-agent-k3s: unknown arg: $arg (try --help)" >&2; exit 1 ;;
+    *) echo "dev-agent-k3s: unknown arg: $1 (try --help)" >&2; exit 1 ;;
   esac
 done
 
