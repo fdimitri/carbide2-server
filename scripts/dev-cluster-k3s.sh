@@ -194,4 +194,11 @@ Useful commands:
   sudo systemctl start k3s
   sudo /usr/local/bin/k3s-uninstall.sh   # tear the cluster down completely
 
+Multi-node: join agent nodes to this server (run ON each agent, not here):
+  # 1. token (keep secret) — read it here on the server:
+  sudo cat /var/lib/rancher/k3s/server/node-token
+  # 2. on the agent (see scripts/dev-agent-k3s.sh):
+  K3S_URL=https://${HOST_IP:-<server-ip>}:6443 K3S_TOKEN=<token> \\
+    ./scripts/dev-agent-k3s.sh --registry-host <server>:5000 --registry-ca ./carbide-rootCA.pem
+
 EOF

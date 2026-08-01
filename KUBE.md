@@ -33,6 +33,7 @@ see what's going on.
 | ---------------------------------------------- | --------------------------------------------- |
 | `scripts/dev-cluster-k3d.sh`                   | Brings up k3d + Traefik + CNPG + Postgres (default).  |
 | `scripts/dev-cluster-k3s.sh`                   | Same stack on host-native k3s (`--kube-backend=k3s`). |
+| `scripts/dev-agent-k3s.sh`                     | Join extra machines as k3s agents (multi-node) + registry CA trust. |
 | `deploy/cnpg-cluster.yaml`                     | The shared `carbide-pg` Postgres definition.  |
 | `charts/workspace/`                            | Per-workspace Helm chart (deploy + svc + ingress + PVC + test pod). |
 | `scripts/smoke-test.sh`                        | HTTP probe of `/up` via Traefik.              |
@@ -67,8 +68,9 @@ What that does:
   workspace/shell pods and every node pulls the same image.
 
 **One-time per node** — each k3s node (server **and** every agent) must trust the
-registry CA. The server node is handled by `dev-cluster-k3s.sh`; for agents, copy
-the deploy host's `carbide-rootCA.pem` to the node and run:
+registry CA. The **server** is handled by `dev-cluster-k3s.sh`; each **agent**
+trusts the CA as part of joining (below). To (re)add trust to a node without
+reinstalling anything, copy the deploy host's `carbide-rootCA.pem` to it and run:
 
 ```sh
 ./scripts/setmeup.sh --kube-backend=k3s --registry-host <deploy-host>:5000 --registry-ca ./carbide-rootCA.pem
@@ -76,6 +78,40 @@ the deploy host's `carbide-rootCA.pem` to the node and run:
 
 That installs the CA into the OS trust store and writes
 `/etc/rancher/k3s/registries.yaml` so containerd can pull over TLS.
+
+## Multi-node: adding agent nodes
+
+`deploy.rb --kube-backend=k3s` brings up a **single-node k3s server** on the
+deploy host. To make the cluster multi-node, join extra machines as **agents**
+(workers). Agents need almost nothing installed — k3s bundles its own containerd,
+so there's no docker/ruby/helm to provision; use the dedicated
+`scripts/dev-agent-k3s.sh` (not the full `setmeup.sh`).
+
+On the **server**, read the join token (keep it secret) and note the server IP:
+
+```sh
+sudo cat /var/lib/rancher/k3s/server/node-token
+hostname -I | awk '{print $1}'          # server IP for the K3S_URL below
+```
+
+On each **agent**, after copying `carbide-rootCA.pem` over (scp), run:
+
+```sh
+K3S_URL=https://<server-ip>:6443 K3S_TOKEN=<token> \
+  ./scripts/dev-agent-k3s.sh \
+    --registry-host <server>:5000 --registry-ca ./carbide-rootCA.pem
+```
+
+This trusts the registry CA and installs k3s in agent mode. Verify on the server:
+
+```sh
+kubectl get nodes -o wide                # the agent should show up, Ready
+```
+
+Cross-node networking (flannel) and the `carbide-pg`/`minio` Services work across
+nodes automatically, so workspace pods scheduled on an agent reach the shared
+Postgres and the MinIO client tier without extra config. Uninstall an agent with
+`sudo /usr/local/bin/k3s-agent-uninstall.sh`.
 
 ## The "show me everything" commands
 
