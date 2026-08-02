@@ -47,12 +47,12 @@ built images straight into that node's containerd. But a **multi-node** cluster
 schedules pods on nodes that never saw `docker build`, so those pods
 `ImagePullBackOff`. The fix is a self-hosted registry every node pulls from.
 
-Enable it by passing `--registry-host` to deploy.rb (opt-in; unset = the
+Enable it by passing `--registry.host` to deploy.rb (opt-in; unset = the
 single-node import path):
 
 ```sh
 # On the deploy host (also the first k3s server node):
-./scripts/deploy.rb --cluster.backend k3s --registry-host <this-host-fqdn>
+./scripts/deploy.rb --cluster.backend k3s --registry.host <this-host-fqdn>
 ```
 
 What that does:
@@ -87,7 +87,7 @@ on, and writes `cluster.yaml`. `--yaml-out` **exits without deploying**: it is a
 freeze step, not the deploy.
 
 ```sh
-./scripts/deploy.rb --cluster.backend k3s --registry-host <server-fqdn> \
+./scripts/deploy.rb --cluster.backend k3s --registry.host <server-fqdn> \
   --cluster.server-url https://<server-ip-or-fqdn>:6443 \
   --yaml-out cluster.yaml            # cluster.yaml carries the real token — keep it secret
 ```
@@ -131,7 +131,7 @@ roles with `--publish-only` / `--external-registry`:
 
 ```sh
 cd ~/repos/carbide2 && git pull && git submodule update --init --recursive
-./scripts/deploy.rb --publish-only --registry-host <build-host-fqdn> --ref <ref>
+./scripts/deploy.rb --publish-only --registry.host <build-host-fqdn> --ref <ref>
 ```
 
 This stands up the `registry:2` container, builds the SHA-tagged images, and
@@ -146,10 +146,14 @@ inlines the registry CA, then exits without deploying):
 ```sh
 cd ~/repos/carbide2 && git pull && git submodule update --init --recursive
 ./scripts/deploy.rb --cluster.backend k3s --external-registry \
-  --registry-host <build-host-fqdn> --registry-ca ./carbide-rootCA.pem \
+  --registry.host <build-host-fqdn> --registry.ca-file ./carbide-rootCA.pem \
   --cluster.server-url https://<server-ip-or-fqdn>:6443 \
-  --ref <ref> --public-host <browser-fqdn> --yaml-out cluster.yaml
+  --ref <ref> --public.host <browser-fqdn> --yaml-out cluster.yaml
 ```
+
+> Supply the registry CA with `--registry.ca-file PATH` (reads the file) — not by
+> pasting the PEM into a plain YAML scalar, whose folded newlines containerd
+> can't parse. If you must inline it in YAML, use a `|` block scalar (`ca: |`).
 
 Then **deploy** the server *from the frozen file*:
 
@@ -166,9 +170,9 @@ so they trust and pull from the build host automatically.
 
 Requirements for the split:
 
-- The registry FQDN (`--registry-host`) must **resolve and be reachable on
+- The registry FQDN (`--registry.host`) must **resolve and be reachable on
   `:5000` from every k3s node** (server + agents), pointing at the build host —
-  independent of the browser `--public-host` name, which only the browser needs.
+  independent of the browser `--public.host` name, which only the browser needs.
 - With **WSL2 mirrored networking** the VM shares the Windows host's network, so
   the registry port is reachable directly — nothing extra to do. (Only WSL2's
   default *NAT* mode needs a Windows-side `netsh interface portproxy` forwarding
