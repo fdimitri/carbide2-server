@@ -31,9 +31,8 @@ see what's going on.
 
 | Path                                           | What it is                                    |
 | ---------------------------------------------- | --------------------------------------------- |
-| `scripts/dev-cluster-k3d.sh`                   | Brings up k3d + Traefik + CNPG + Postgres (default).  |
-| `scripts/dev-cluster-k3s.sh`                   | Same stack on host-native k3s (`--kube-backend=k3s`). |
-| `scripts/dev-agent-k3s.sh`                     | Join extra machines as k3s agents (multi-node) + registry CA trust. |
+| `../carbide2/scripts/deploy.rb`                | Brings up the node (k3d or host-native k3s), Traefik, CNPG, Postgres, MinIO. `--cluster.role init` for the first node, `--cluster.role join` to add another control-plane server. |
+| `../carbide2/scripts/lib/carbide_node.rb`      | `Carbide::Node` — the Ruby node lifecycle (create/install/join, registry CA trust, shared infra). Replaced the old `dev-cluster-*.sh` / `dev-agent-k3s.sh` bash scripts. |
 | `deploy/cnpg-cluster.yaml`                     | The shared `carbide-pg` Postgres definition.  |
 | `charts/workspace/`                            | Per-workspace Helm chart (deploy + svc + ingress + PVC + test pod). |
 | `scripts/smoke-test.sh`                        | HTTP probe of `/up` via Traefik.              |
@@ -52,8 +51,8 @@ Enable it by passing `--registry-host` to deploy.rb (opt-in; unset = the
 single-node import path):
 
 ```sh
-# On the deploy host (also the k3s server node):
-./scripts/deploy.rb --kube-backend=k3s --registry-host <this-host-fqdn>
+# On the deploy host (also the first k3s server node):
+./scripts/deploy.rb --cluster.backend k3s --registry-host <this-host-fqdn>
 ```
 
 What that does:
@@ -67,51 +66,50 @@ What that does:
 - Pins those tags into the control-plane chart, so the operator stamps them onto
   workspace/shell pods and every node pulls the same image.
 
-**One-time per node** — each k3s node (server **and** every agent) must trust the
-registry CA. The **server** is handled by `dev-cluster-k3s.sh`; each **agent**
-trusts the CA as part of joining (below). To (re)add trust to a node without
-reinstalling anything, copy the deploy host's `carbide-rootCA.pem` to it and run:
+**Automatic per node** — every k3s node must trust the registry CA so its
+containerd can pull over TLS. `Carbide::Node` does this for you on both `--role
+init` and `--role join`: it writes `/etc/rancher/k3s/registries.yaml` from the CA
+**inlined in the emitted config** (`registry.ca`), so there's no PEM to scp
+between machines. It's idempotent — the file is only rewritten (and k3s only
+restarted) when the CA actually changes.
+
+## Multi-node: adding more nodes
+
+`deploy.rb --cluster.backend k3s` (`--cluster.role init`, the default) brings up
+the **first k3s server** on the deploy host. To make the cluster multi-node, each
+additional machine joins as a **full control-plane server** (HA embedded etcd),
+not a second-class agent — every node is homogeneous and consumes the **same
+emitted config**.
+
+On the **first node**, emit the resolved config (it mints `cluster.token` on
+`--role init`) and record the server URL other nodes reach it on:
 
 ```sh
-./scripts/setmeup.sh --kube-backend=k3s --registry-host <deploy-host>:5000 --registry-ca ./carbide-rootCA.pem
+./scripts/deploy.rb --cluster.backend k3s --registry-host <server-fqdn> \
+  --cluster.server-url https://<server-ip-or-fqdn>:6443 \
+  --yaml-out cluster.yaml            # cluster.yaml carries the real token — keep it secret
 ```
 
-That installs the CA into the OS trust store and writes
-`/etc/rancher/k3s/registries.yaml` so containerd can pull over TLS.
-
-## Multi-node: adding agent nodes
-
-`deploy.rb --kube-backend=k3s` brings up a **single-node k3s server** on the
-deploy host. To make the cluster multi-node, join extra machines as **agents**
-(workers). Agents need almost nothing installed — k3s bundles its own containerd,
-so there's no docker/ruby/helm to provision; use the dedicated
-`scripts/dev-agent-k3s.sh` (not the full `setmeup.sh`).
-
-On the **server**, read the join token (keep it secret) and note the server IP:
+Copy `cluster.yaml` to each **other node** (it already inlines the registry CA,
+so there's nothing else to hand-carry), then run there:
 
 ```sh
-sudo cat /var/lib/rancher/k3s/server/node-token
-hostname -I | awk '{print $1}'          # server IP for the K3S_URL below
+./scripts/deploy.rb --config cluster.yaml --cluster.role join
 ```
 
-On each **agent**, after copying `carbide-rootCA.pem` over (scp), run:
+`Carbide::Node` trusts the registry CA, installs k3s as a joining **server**
+(`server --server https://…:6443`, same shared token), and syncs kubeconfig. No
+infra is re-installed — the shared cluster already has Traefik/CNPG/MinIO. Verify
+on any node:
 
 ```sh
-K3S_URL=https://<server-ip>:6443 K3S_TOKEN=<token> \
-  ./scripts/dev-agent-k3s.sh \
-    --registry-host <server>:5000 --registry-ca ./carbide-rootCA.pem
-```
-
-This trusts the registry CA and installs k3s in agent mode. Verify on the server:
-
-```sh
-kubectl get nodes -o wide                # the agent should show up, Ready
+kubectl get nodes -o wide                # every node should show up, Ready
 ```
 
 Cross-node networking (flannel) and the `carbide-pg`/`minio` Services work across
-nodes automatically, so workspace pods scheduled on an agent reach the shared
-Postgres and the MinIO client tier without extra config. Uninstall an agent with
-`sudo /usr/local/bin/k3s-agent-uninstall.sh`.
+nodes automatically, so workspace pods scheduled on any node reach the shared
+Postgres and the MinIO client tier without extra config. Uninstall a node with
+`sudo /usr/local/bin/k3s-uninstall.sh`.
 
 ## Multi-node: a dedicated build/registry host (no k3s)
 
@@ -128,27 +126,27 @@ cd ~/repos/carbide2 && git pull && git submodule update --init --recursive
 ```
 
 This stands up the `registry:2` container, builds the SHA-tagged images, and
-pushes them — then stops. Copy this host's mkcert root CA to each k3s node:
-
-```sh
-cp "$(mkcert -CAROOT)/rootCA.pem" ./carbide-rootCA.pem   # then scp to each node
-```
+pushes them — then stops. The registry's mkcert root CA is inlined into the
+emitted config for the k3s nodes to consume (see below), so there's no PEM to
+scp around.
 
 **k3s server** (`--external-registry` — pulls the already-pushed images, skips the
 local registry + build):
 
 ```sh
-# carbide-rootCA.pem copied here first
 cd ~/repos/carbide2 && git pull && git submodule update --init --recursive
-./scripts/deploy.rb --kube-backend=k3s --external-registry \
+./scripts/deploy.rb --cluster.backend k3s --external-registry \
   --registry-host <build-host-fqdn> --registry-ca ./carbide-rootCA.pem \
-  --ref <ref> --public-host <browser-fqdn>
+  --cluster.server-url https://<server-ip-or-fqdn>:6443 \
+  --ref <ref> --public-host <browser-fqdn> --yaml-out cluster.yaml
 ```
 
 The server still builds+uploads the SPA client to in-cluster MinIO (that needs
 cluster access, so it can't run on the build host) — the heavy *image* builds are
-what moved to the build box. **Agents** then join with `dev-agent-k3s.sh` exactly
-as above, pointing `--registry-host` at the build host.
+what moved to the build box. **Other nodes** then join with
+`deploy.rb --config cluster.yaml --cluster.role join` exactly as in the section
+above; the emitted `cluster.yaml` already carries the registry host + inlined CA,
+so they trust and pull from the build host automatically.
 
 Requirements for the split:
 
