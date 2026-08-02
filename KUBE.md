@@ -81,13 +81,22 @@ additional machine joins as a **full control-plane server** (HA embedded etcd),
 not a second-class agent — every node is homogeneous and consumes the **same
 emitted config**.
 
-On the **first node**, emit the resolved config (it mints `cluster.token` on
-`--role init`) and record the server URL other nodes reach it on:
+On the **first node**, first **freeze** the resolved config — this mints
+`cluster.token` (on `--role init`), records the server URL other nodes reach it
+on, and writes `cluster.yaml`. `--yaml-out` **exits without deploying**: it is a
+freeze step, not the deploy.
 
 ```sh
 ./scripts/deploy.rb --cluster.backend k3s --registry-host <server-fqdn> \
   --cluster.server-url https://<server-ip-or-fqdn>:6443 \
   --yaml-out cluster.yaml            # cluster.yaml carries the real token — keep it secret
+```
+
+Then **deploy** the first node *from the frozen file*. `cluster.token` is now
+present, so it is reused, not re-minted:
+
+```sh
+./scripts/deploy.rb --config cluster.yaml
 ```
 
 Copy `cluster.yaml` to each **other node** (it already inlines the registry CA,
@@ -131,7 +140,8 @@ emitted config for the k3s nodes to consume (see below), so there's no PEM to
 scp around.
 
 **k3s server** (`--external-registry` — pulls the already-pushed images, skips the
-local registry + build):
+local registry + build). First **freeze** the resolved config (mints the token,
+inlines the registry CA, then exits without deploying):
 
 ```sh
 cd ~/repos/carbide2 && git pull && git submodule update --init --recursive
@@ -139,6 +149,12 @@ cd ~/repos/carbide2 && git pull && git submodule update --init --recursive
   --registry-host <build-host-fqdn> --registry-ca ./carbide-rootCA.pem \
   --cluster.server-url https://<server-ip-or-fqdn>:6443 \
   --ref <ref> --public-host <browser-fqdn> --yaml-out cluster.yaml
+```
+
+Then **deploy** the server *from the frozen file*:
+
+```sh
+./scripts/deploy.rb --config cluster.yaml
 ```
 
 The server still builds+uploads the SPA client to in-cluster MinIO (that needs
