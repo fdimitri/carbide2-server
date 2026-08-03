@@ -27,12 +27,13 @@ class ClientRegistry
     def public_base = "/clients/#{name}/#{sha}/"
     def label        = manifest["label"].presence || sha
     def build_time   = manifest["build_time"]
+    def commit_time  = manifest["commit_time"]
     def floors       = manifest["floors"] || {}
     def index_exist? = backend.index_exist?(name, sha)
     def read_index   = backend.read_index(name, sha)
 
     def as_json_h
-      { name:, sha:, label:, build_time:, base: public_base, floors: }
+      { name:, sha:, label:, build_time:, commit_time:, base: public_base, floors: }
     end
   end
 
@@ -69,10 +70,11 @@ class ClientRegistry
     all_builds.map(&:name).uniq.sort
   end
 
-  # Builds for a family, newest first (by manifest build_time, then sha).
+  # Builds for a family, newest first by git commit time (falling back to
+  # build_time for manifests built before commit_time existed), then sha.
   def builds(name)
     all_builds.select { |b| b.name == name.to_s }
-              .sort_by { |b| [b.build_time.to_s, b.sha] }
+              .sort_by { |b| [(b.commit_time.presence || b.build_time).to_s, b.sha] }
               .reverse
   end
 
