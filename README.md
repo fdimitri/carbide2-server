@@ -98,8 +98,10 @@ For Vue/Vite client internals, see the [carbide2-client](https://github.com/fdim
 git clone --recurse-submodules https://github.com/fdimitri/carbide2-server.git
 cd carbide2-server
 
-# Bring up k3d cluster + Traefik + CNPG + Postgres (~5 min first time)
-./scripts/dev-cluster.sh
+# Bring up the cluster + Traefik + CNPG + Postgres + MinIO (~5 min first time).
+# deploy.rb lives in the meta repo (../carbide2); k3d is the default backend.
+../carbide2/scripts/deploy.rb
+# (host-native k3s alternative: ../carbide2/scripts/deploy.rb --cluster.backend k3s)
 
 # Build and import the workspace image
 docker build -t carbide2:dev .
@@ -190,7 +192,7 @@ charts/workspace/ Helm chart for per-workspace k8s deployment
 config/           Rails config, routes, credentials
 db/               Migrations, seeds, schema
 deploy/           CNPG cluster manifest
-scripts/          dev-cluster.sh, test-substrate.sh, import-host-dir.sh, etc.
+scripts/          test-substrate.sh, import-host-dir.sh, smoke-test.sh, etc. (cluster bring-up lives in ../carbide2/scripts/deploy.rb)
 ```
 
 ---

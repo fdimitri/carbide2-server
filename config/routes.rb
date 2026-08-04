@@ -8,6 +8,15 @@ Rails.application.routes.draw do
   get '/about', to: 'landing#about'
 
   namespace :api, defaults: { format: :json } do
+    # Build/version provenance (public). `common` is the shape both the
+    # workspace server and the control plane implement identically; `server`
+    # adds server-only runtime detail. The client fetches these to fill in the
+    # SHAs it cannot bake itself.
+    namespace :v1 do
+      get 'common/version', to: 'version#common'
+      get 'server/version', to: 'version#server'
+    end
+
     # Authentication endpoints
     post '/login',  to: 'auth#login'
     post '/signup', to: 'auth#signup'
@@ -15,6 +24,12 @@ Rails.application.routes.draw do
     # User preferences
     get   '/preferences', to: 'preferences#show'
     patch '/preferences', to: 'preferences#update'
+
+    # Available SPA client builds (the Decider picker reads this).
+    get   '/clients', to: 'clients#index'
+
+    # Agents — workspace-global LLM personas, editable at runtime.
+    resources :agents, only: [:index, :show, :update]
 
     resources :projects do
       member do
@@ -58,7 +73,7 @@ Rails.application.routes.draw do
   # Vue Router history-mode fallback — must come last.
   # API, Devise, assets, and the health check are all matched above.
   get '*path', to: 'spa#show', constraints: ->(req) {
-    !req.path.start_with?('/api', '/users', '/rails', '/assets', '/up')
+    !req.path.start_with?('/api', '/users', '/rails', '/assets', '/clients', '/up')
   }
 
   # To re-enable OAuth in the future:

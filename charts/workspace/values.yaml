@@ -13,6 +13,9 @@
 
 projectId: 1
 
+# NOTE: the live path is the control-plane operator (which stamps the workspace
+# image from its own chart values, overridden by scripts/deploy.rb in registry
+# mode). These values only apply to a standalone `helm install` of this chart.
 image:
   repository: carbide2
   tag: dev
@@ -57,8 +60,7 @@ ingress:
   # Host can be left empty for path-only matching (works with curl --header
   # 'Host: anything' or by hitting the LB IP directly).
   host: ""
-  # External port the browser reaches Traefik on. Used to tell Vite's HMR
-  # client which port to connect back to (the dev k3d cluster maps host
+  # External port the browser reaches Traefik on (the dev k3d cluster maps host
   # :8080 -> Traefik :80, so the browser loads pages from :8080).
   publicPort: 8080
   # External HTTPS port the browser reaches Traefik on. The HTTP→HTTPS redirect
@@ -84,22 +86,31 @@ ingress:
 # Per-pod env. Anything here is merged into the Deployment's env list verbatim.
 extraEnv: []
 
+# The Decider: client static tier. The SPA is not baked into the image; the
+# loader fetches the pinned build's index.html from the MinIO-backed static
+# tier over in-cluster HTTP (CARBIDE_CLIENT_TIER_URL). Browsers load the assets
+# via Traefik at /clients/<family>/<sha>/. Uploads are done by
+# scripts/build-client (see scripts/deploy.rb).
+clientTier:
+  url: "http://minio.carbide-system.svc.cluster.local:9000/clients"
+
 # Rails-side knobs.
 rails:
   env: development
   port: 3000
-  # Vite dev server (kept in-pod for dev mode; will be split out in prod).
-  vitePort: 5173
   # EventMachine worker WS port.
   workerPort: 8080
   # Run db:seed in the migrate init container on every pod start. Idempotent
   # (db/seeds.rb uses find_or_create_by!). Default true for dev so a fresh
   # cluster comes up with a known user + Demo Project + sample VFS files.
   seedOnStart: true
-  # Comma-separated host allowlist injected into config.hosts for development.
-  # Wide-open by default: all RFC-1918 ranges, localhost, .svc.cluster.local,
-  # and the LAN IP of the k3d host. Override per install if you want to tighten.
-  devHosts: "localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc.cluster.local,.cluster.local"
+  # Host allowlist injected into config.hosts (RAILS_DEV_HOSTS) for development.
+  # "*" (or empty) = accept ANY Host: header — the dev default. A CIDR allowlist
+  # can never match the ingress FQDN (e.g. dev1.frankd.local) because a hostname
+  # Host: header doesn't match an IP CIDR, so browsers hitting the box by name
+  # got a 403. Override with a comma-separated list to tighten (entries with '/'
+  # are CIDRs, entries starting with '.' are domain suffixes).
+  devHosts: "*"
 
 # Worker (EventMachine WS server) knobs.
 worker:

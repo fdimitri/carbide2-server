@@ -73,16 +73,24 @@ Rails.application.configure do
   # config.generators.apply_rubocop_autocorrect_after_generate!
 
   # Host allowlist. Rails 8 blocks unknown Host: headers with a 403 by default.
-  # In dev we accept anything on RFC-1918 (so the workspace pod is reachable
-  # from any browser on the LAN) plus cluster-internal DNS. Configurable via
-  # RAILS_DEV_HOSTS (comma-separated; entries with '/' are IP CIDRs, entries
-  # starting with '.' are domain suffixes).
+  #
+  # An allowlist is the wrong default for dev: the browser-facing FQDN (e.g.
+  # dev1.frankd.local) is only known at deploy time, and a literal hostname in
+  # the Host: header NEVER matches an RFC-1918 CIDR entry — so reaching the box
+  # by name yielded a confusing 403 "Blocked hosts" even though the LAN IP was
+  # allowlisted. For dev we therefore accept ANY host by default and let an
+  # operator opt back into an allowlist via RAILS_DEV_HOSTS when they want to
+  # tighten things (comma-separated; entries with '/' are IP CIDRs, entries
+  # starting with '.' are domain suffixes). Empty or "*" => accept all hosts.
   config.hosts.clear
-  default_hosts = "localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16," \
-                  ".svc.cluster.local,.cluster.local"
-  ENV.fetch("RAILS_DEV_HOSTS", default_hosts).split(",").map(&:strip).reject(&:empty?).each do |h|
-    config.hosts << (h.include?("/") ? IPAddr.new(h) : h)
+  dev_hosts = ENV.fetch("RAILS_DEV_HOSTS", "*").strip
+  unless dev_hosts.empty? || dev_hosts == "*"
+    dev_hosts.split(",").map(&:strip).reject(&:empty?).each do |h|
+      config.hosts << (h.include?("/") ? IPAddr.new(h) : h)
+    end
   end
-  # Health endpoint must always answer (k8s probes, helm tests, smoke checks).
+  # When config.hosts is empty Rails accepts any Host:. Keep /up excluded so the
+  # health endpoint answers even under a tightened allowlist (k8s probes, helm
+  # tests, smoke checks).
   config.host_authorization = { exclude: ->(request) { request.path == "/up" } }
 end

@@ -76,16 +76,20 @@ spec:
           port: rails
       middlewares:
         - name: {{ include "workspace.fullname" . }}-strip
-    # Everything else (SPA root + Vite client paths: /@vite, /@id, /src,
-    # /node_modules, HMR ws, etc.) goes to the Vite dev server. We do NOT
-    # strip the prefix here: Vite is configured with base=/w/<id>/ so it
-    # both serves and rewrites URLs under that path. Stripping would break
-    # asset URL resolution.
+    # Everything else (the SPA shell + history-mode routes like /login) goes to
+    # the Rails loader (SpaController), which resolves the pinned client build
+    # and serves its index.html. The strip middleware removes the /w/<id>
+    # prefix AND sets X-Forwarded-Prefix, which the loader reads to inject
+    # <base href="/w/<id>/"> — the client derives its API/WS/token scope from
+    # that base. The SPA's own assets are absolute (/clients/<family>/<sha>/…)
+    # and served by the cluster-wide static-tier route, not from here.
     - match: {{ printf "%sPathPrefix(`%s`)" $hostExpr $prefix | quote }}
       kind: Rule
       services:
         - name: {{ include "workspace.fullname" . }}
-          port: vite
+          port: rails
+      middlewares:
+        - name: {{ include "workspace.fullname" . }}-strip
 {{- if .Values.ingress.serveRoot }}
     # Cluster-wide landing page at `/` and `/about`, plus root-level static
     # assets served from Rails public/. No strip middleware — Rails sees the URL as-is.

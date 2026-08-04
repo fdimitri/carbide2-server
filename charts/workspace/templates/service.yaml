@@ -15,6 +15,3 @@ spec:
     - name: worker
       port: {{ .Values.rails.workerPort }}
       targetPort: worker
-    - name: vite
-      port: {{ .Values.rails.vitePort }}
-      targetPort: vite

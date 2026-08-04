@@ -1,0 +1,202 @@
+# MinIO — object store + static tier for the Decider's client builds.
+#
+# This is the ONLY place a built SPA client lives. Each build is uploaded to
+# the `clients` bucket under the key <family>/<sha>/{index.html,manifest.json,
+# assets/*} (see meta-repo scripts/build-client). Because the bucket is named
+# `clients`, an object at key <family>/<sha>/foo.js is served by MinIO at the
+# path /clients/<family>/<sha>/foo.js — exactly the public URL the client's
+# absolute Vite base (--base=/clients/<family>/<sha>/) references. So Traefik
+# forwards /clients/... straight through with NO path rewrite (see the
+# IngressRoute in this file), and the `clients` bucket is anonymous-read so the
+# assets serve without credentials.
+#
+# Dev sizing/creds only. For a real deployment: rotate the root credentials,
+# size the PVC, and consider a MinIO distributed/HA topology.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: carbide-system
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-credentials
+  namespace: carbide-system
+type: Opaque
+stringData:
+  # Dev defaults. Override before any non-local deployment.
+  root-user: carbide
+  root-password: carbide-dev-minio
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-data
+  namespace: carbide-system
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: carbide-system
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/part-of: carbide2
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # RWO PVC — single mounter.
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: minio
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minio
+        app.kubernetes.io/part-of: carbide2
+    spec:
+      containers:
+        - name: minio
+          image: quay.io/minio/minio:RELEASE.2025-04-08T15-41-24Z
+          args: ["server", "/data", "--console-address", ":9001"]
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: minio-credentials
+                  key: root-user
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minio-credentials
+                  key: root-password
+          ports:
+            - name: api
+              containerPort: 9000
+            - name: console
+              containerPort: 9001
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: api
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: api
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "1"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: minio-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: carbide-system
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/part-of: carbide2
+spec:
+  selector:
+    app.kubernetes.io/name: minio
+  ports:
+    - name: api
+      port: 9000
+      targetPort: api
+    - name: console
+      port: 9001
+      targetPort: console
+---
+# One-shot bootstrap: wait for MinIO, create the `clients` bucket, and make it
+# anonymous-read so the static tier serves assets without credentials.
+# Idempotent — safe to re-run on every dev-cluster.sh / deploy.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-bootstrap
+  namespace: carbide-system
+spec:
+  backoffLimit: 10
+  ttlSecondsAfterFinished: 120
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minio-bootstrap
+        app.kubernetes.io/part-of: carbide2
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: quay.io/minio/mc:RELEASE.2025-04-08T15-39-49Z
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: minio-credentials
+                  key: root-user
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minio-credentials
+                  key: root-password
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              echo "waiting for minio..."
+              until mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do
+                sleep 2
+              done
+              mc mb --ignore-existing local/clients
+              # Anonymous read-only: the static tier serves GETs without creds,
+              # while uploads still require the root credentials.
+              mc anonymous set download local/clients
+              echo "minio bootstrap complete: bucket 'clients' is anonymous-read"
+---
+# Static tier route: forward /clients/ straight to the MinIO API. No strip
+# middleware — a request for /clients/<family>/<sha>/foo.js maps to
+# bucket=clients, key=<family>/<sha>/foo.js, which is exactly how the build was
+# uploaded and how its absolute Vite base references it. Cluster-wide: one tier
+# serves every workspace + the control dashboard. Served on both entrypoints;
+# websecure carries TLS so assets load without mixed-content on https pages.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: clients-static-tier
+  namespace: carbide-system
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/part-of: carbide2
+spec:
+  entryPoints:
+    - web
+    - websecure
+  tls: {}
+  routes:
+    - match: PathPrefix(`/clients/`)
+      kind: Rule
+      services:
+        - name: minio
+          port: 9000
+
