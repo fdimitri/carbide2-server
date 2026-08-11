@@ -1,5 +1,5 @@
 # Tag each browser session with the CLIENT app version that created it
-# (e.g. "0.2.1-bluesteel"). The session `doc` shape/semantics are owned by the
+# (e.g. "0.3.1-letigre"). The session `doc` shape/semantics are owned by the
 # client, so a session written by a different client build may be incompatible.
 # The picker uses this to flag/disable version-mismatched sessions as garbage the
 # user can delete, rather than silently resuming a doc the current build can't
