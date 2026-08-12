@@ -43,6 +43,6 @@ minitest → Playwright):
 ./scripts/test-substrate.sh
 ```
 
-See [KUBE.md](KUBE.md) for an orientation to what the cluster is made of and how
+See [KUBE.md](../carbide2/KUBE.md) for an orientation to what the cluster is made of and how
 to inspect it.
 

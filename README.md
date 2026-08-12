@@ -118,7 +118,7 @@ open http://localhost:8080/
 
 Default login: `dev@example.com` / `password`
 
-See [DEPLOY-k3d.md](DEPLOY-k3d.md) for the full step-by-step (host packages, kubectl, Helm, k3d install) and [KUBE.md](KUBE.md) for cluster inspection commands.
+See [DEPLOY-k3d.md](DEPLOY-k3d.md) for the full step-by-step (host packages, kubectl, Helm, k3d install) and [KUBE.md](../carbide2/KUBE.md) for cluster inspection commands.
 
 **Iterating on code:**
 
