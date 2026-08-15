@@ -43,19 +43,54 @@ class DirectoryEntry < ApplicationRecord
     return '' if binary?
     doc = FsDocument.new
     file_changes.order(:revision, :id).each do |change|
-      snake = camel_to_snake(change.change_type)
-
-      if respond_to?("cmd_#{snake}", true)
-        send("cmd_#{snake}", doc, change)
-      else
-        if doc.respond_to?("do_#{snake}")
-          parsed = parse_change_data(change.change_data)
-          doc.send("do_#{snake}", nil, parsed)
-        end
-      end
+      self.class.apply_change!(doc, change.change_type, change.change_data)
     end
     doc.get_contents
   end
+
+  # Apply a single change (raw change_type + change_data) to an FsDocument
+  # buffer. Shared by calc_current (full replay) and the worker's in-memory
+  # Document cache (incremental advance) so both interpret the log identically.
+  def self.apply_change!(doc, change_type, change_data)
+    case change_type.to_s
+    when 'setContents'
+      data = change_data.to_s
+      doc.set_contents(data.include?("\n") ? data.split("\n", -1) : [data])
+    else
+      snake = change_type.to_s.gsub(/([A-Z])/) { "_#{$1.downcase}" }.sub(/^_/, '')
+      return unless doc.respond_to?("do_#{snake}")
+
+      parsed = begin
+                 JSON.parse(change_data.to_s)
+               rescue JSON::ParserError
+                 change_data
+               end
+      doc.send("do_#{snake}", nil, parsed)
+    end
+  end
+
+  # Current rendered contents, served transparently: from the worker's live
+  # Document cache when it's running (hydrating on first touch), otherwise a
+  # full FileChange replay. This is the ONE place the cache-or-replay choice
+  # is made — callers just ask the entry for its content.
+  def get_content
+    cached_document&.content || calc_current
+  end
+
+  # Revision stamp paired with get_content (== file_changes.count). Served from
+  # the cache when available so it matches the cached buffer without a COUNT.
+  def get_revision
+    cached_document&.revision || file_changes.count
+  end
+
+  # The worker's live Document for this entry, or nil when the cache isn't
+  # available (Rails side, folders, binary entries). Kept private so the
+  # cache is an implementation detail of get_content/get_revision.
+  def cached_document
+    return nil unless defined?(::Document)
+    ::Document.for(self)
+  end
+  private :cached_document
 
   # Bounded byte read — useful for agent tool calls that need to peek at a
   # specific window of a file without loading the whole thing. For text
@@ -405,17 +440,6 @@ class DirectoryEntry < ApplicationRecord
   private
   # -------------------------------------------------------------------------
 
-  # cmd_set_contents — replaces document content entirely.
-  # Called by calc_current when change_type == 'setContents'.
-  def cmd_set_contents(doc, change)
-    data = change.change_data.to_s
-    if data.include?("\n")
-      doc.set_contents(data.split("\n", -1))
-    else
-      doc.set_contents([data])
-    end
-  end
-
   def self.build_tree_node(entry, by_owner)
     node = {
       id:      entry.id,
@@ -430,16 +454,6 @@ class DirectoryEntry < ApplicationRecord
         .map { |child| build_tree_node(child, by_owner) }
     end
     node
-  end
-
-  def camel_to_snake(str)
-    str.gsub(/([A-Z])/) { "_#{$1.downcase}" }.sub(/^_/, '')
-  end
-
-  def parse_change_data(data)
-    JSON.parse(data.to_s)
-  rescue JSON::ParserError
-    data
   end
 
   def self.normalize(path)
