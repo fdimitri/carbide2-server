@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_07_17_010000) do
+ActiveRecord::Schema[8.1].define(version: 2026_07_18_000000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -61,6 +61,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_17_010000) do
     t.string "slug", null: false
     t.text "system_prompt", default: "", null: false
     t.datetime "updated_at", null: false
+    t.integer "max_turns"
     t.index ["enabled"], name: "index_agents_on_enabled"
     t.index ["role"], name: "index_agents_on_role"
     t.index ["slug"], name: "index_agents_on_slug", unique: true

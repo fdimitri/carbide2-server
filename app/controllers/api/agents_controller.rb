@@ -61,7 +61,7 @@ class Api::AgentsController < Api::BaseController
   # api_key is handled separately (see #update); slug is immutable here.
   def agent_params
     params.permit(:name, :description, :provider_url, :model,
-                  :system_prompt, :role, :enabled, :shell_exec_enabled)
+                  :system_prompt, :role, :enabled, :shell_exec_enabled, :max_turns)
   end
 
   def normalized_tools
@@ -89,6 +89,7 @@ class Api::AgentsController < Api::BaseController
       role:               a.role,
       enabled:            a.enabled,
       shell_exec_enabled: a.shell_exec_enabled,
+      max_turns:          a.max_turns,
     }
   end
 end
