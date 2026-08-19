@@ -30,6 +30,12 @@ class FsLoader
     /\.log\z/,
   ].freeze
 
+  # Directories that must never enter the DBFS, at ANY depth (the anchored
+  # IGNORED_PATTERNS above only match at the project root). Pruning these keeps
+  # subtree sweeps from importing a submodule's .git object store or a nested
+  # node_modules tree.
+  PRUNE_DIR_NAMES = %w[.git node_modules .bundle].freeze
+
   MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB — skip very large files
 
   def initialize(project_id:, root_path:, user_id: nil, verbose: true)
@@ -54,7 +60,51 @@ class FsLoader
     @stats
   end
 
+  # Import a single subtree — the directory at +disk_subpath+ and everything
+  # under it — without re-walking from the project root. The VfsWatcher calls
+  # this to sweep a directory whose contents inotify missed because the files
+  # were written before the directory's own recursive watch went live.
+  #
+  # Idempotent and race-safe: existing entries are skipped (or adopted), and a
+  # concurrent insert from the live inotify handler is caught via the unique
+  # (project_id, srcpath) index. Returns the @stats hash.
+  def load_dir!(disk_subpath)
+    disk_subpath = File.expand_path(disk_subpath)
+    unless disk_subpath == @root_path || disk_subpath.start_with?(@root_path + '/')
+      raise "load_dir!: #{disk_subpath} is outside root #{@root_path}"
+    end
+    return @stats unless Dir.exist?(disk_subpath)
+
+    DirectoryEntry.ensure_root!(@project_id)
+
+    virtual = srcpath_for(disk_subpath)
+    # The directory itself (and any missing ancestors) must exist before we
+    # import its contents, since import_dir/import_file look up the parent row.
+    ensure_dir_chain(virtual) unless virtual == '/'
+
+    log "Sweeping #{disk_subpath} (#{virtual}) into project #{@project_id}"
+    walk(disk_subpath, virtual)
+    @stats
+  end
+
   private
+
+  # Absolute disk path -> leading-slash srcpath, relative to @root_path.
+  def srcpath_for(disk_path)
+    return '/' if disk_path == @root_path
+    rel = disk_path[@root_path.length..].to_s
+    rel.start_with?('/') ? rel : "/#{rel}"
+  end
+
+  # Idempotently import a folder and every ancestor between the root and it,
+  # top-down, so a deep subtree sweep has its parent chain in place.
+  def ensure_dir_chain(srcpath)
+    cur = ''
+    srcpath.split('/').reject(&:empty?).each do |seg|
+      cur = "#{cur}/#{seg}"
+      import_dir(cur)
+    end
+  end
 
   def walk(disk_dir, virtual_prefix)
     Dir.foreach(disk_dir) do |name|
@@ -64,7 +114,8 @@ class FsLoader
       disk_path   = File.join(disk_dir, name)
       rel_for_pat = rel_path.sub(%r{\A/}, '')
 
-      if IGNORED_PATTERNS.any? { |pat| pat.match?(rel_for_pat) }
+      if IGNORED_PATTERNS.any? { |pat| pat.match?(rel_for_pat) } ||
+         (PRUNE_DIR_NAMES.include?(name) && File.directory?(disk_path))
         log "  skip (ignored): #{rel_path}"
         @stats[:skipped] += 1
         next
@@ -101,6 +152,12 @@ class FsLoader
     entry.refresh_disk_stat!(File.join(@root_path, srcpath.sub(%r{\A/}, '')))
     @stats[:dirs] += 1
     log "  dir:  #{srcpath}"
+    entry
+  rescue ActiveRecord::RecordNotUnique
+    # A concurrent create (e.g. the live inotify handler racing a subtree
+    # sweep) already inserted this row. The unique (project_id, srcpath) index
+    # guarantees no duplicate — adopt the existing entry.
+    DirectoryEntry.find_by_project_and_path(@project_id, srcpath)
   end
 
   def import_file(disk_path, srcpath)
@@ -187,6 +244,9 @@ class FsLoader
     @stats[:files] += 1
     log "  file: #{srcpath} (#{size} bytes)"
     entry
+  rescue ActiveRecord::RecordNotUnique
+    # Concurrent create raced us; adopt the winner (see import_dir).
+    DirectoryEntry.find_by_project_and_path(@project_id, srcpath)
   end
 
   def log(msg)
