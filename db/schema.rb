@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_07_18_000000) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_20_000000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -42,6 +42,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_18_000000) do
     t.text "tool_calls_json"
     t.integer "turn", null: false
     t.datetime "updated_at", null: false
+    t.bigint "user_id"
     t.index ["agent_conversation_id", "turn"], name: "index_agent_messages_on_agent_conversation_id_and_turn", unique: true
     t.index ["agent_conversation_id"], name: "index_agent_messages_on_agent_conversation_id"
   end
@@ -229,6 +230,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_18_000000) do
   add_foreign_key "agent_conversations", "projects"
   add_foreign_key "agent_conversations", "users"
   add_foreign_key "agent_messages", "agent_conversations"
+  add_foreign_key "agent_messages", "users"
   add_foreign_key "browser_sessions", "browser_sessions", column: "forked_from_id"
   add_foreign_key "browser_sessions", "projects"
   add_foreign_key "browser_sessions", "users"
