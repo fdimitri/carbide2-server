@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_20_000000) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_21_000000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -80,6 +80,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_20_000000) do
     t.uuid "session_uuid", null: false
     t.datetime "updated_at", null: false
     t.bigint "user_id", null: false
+    t.jsonb "version_history", default: [], null: false
     t.index ["forked_from_id"], name: "index_browser_sessions_on_forked_from_id"
     t.index ["project_id"], name: "index_browser_sessions_on_project_id"
     t.index ["session_uuid"], name: "index_browser_sessions_on_session_uuid", unique: true
