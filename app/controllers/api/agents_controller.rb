@@ -48,7 +48,13 @@ class Api::AgentsController < Api::BaseController
   end
 
   def destroy
-    find_agent.destroy!
+    agent = find_agent
+    if agent.agent_conversations.exists?
+      render json: { error: 'This agent has conversations and cannot be deleted.' },
+             status: :conflict
+      return
+    end
+    agent.destroy!
     head :no_content
   end
 

@@ -36,6 +36,8 @@ class Agent < ApplicationRecord
 
   scope :enabled, -> { where(enabled: true) }
 
+  has_many :agent_conversations, dependent: :restrict_with_error
+
   ROLES = %w[general coder reviewer safety router].freeze
 
   # Allowed tool slugs as a plain array regardless of how the DB returned the

@@ -153,10 +153,11 @@ class FsLoader
     @stats[:dirs] += 1
     log "  dir:  #{srcpath}"
     entry
-  rescue ActiveRecord::RecordNotUnique
+  rescue ActiveRecord::RecordNotUnique, ActiveRecord::RecordInvalid
     # A concurrent create (e.g. the live inotify handler racing a subtree
-    # sweep) already inserted this row. The unique (project_id, srcpath) index
-    # guarantees no duplicate — adopt the existing entry.
+    # sweep) already inserted this row — either we lost the DB unique-index
+    # race (RecordNotUnique) or the app-level uniqueness validation saw the
+    # committed row first (RecordInvalid). Adopt the existing entry either way.
     DirectoryEntry.find_by_project_and_path(@project_id, srcpath)
   end
 
@@ -244,7 +245,7 @@ class FsLoader
     @stats[:files] += 1
     log "  file: #{srcpath} (#{size} bytes)"
     entry
-  rescue ActiveRecord::RecordNotUnique
+  rescue ActiveRecord::RecordNotUnique, ActiveRecord::RecordInvalid
     # Concurrent create raced us; adopt the winner (see import_dir).
     DirectoryEntry.find_by_project_and_path(@project_id, srcpath)
   end
