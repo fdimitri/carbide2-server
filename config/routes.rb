@@ -29,7 +29,7 @@ Rails.application.routes.draw do
     get   '/clients', to: 'clients#index'
 
     # Agents — workspace-global LLM personas, editable at runtime.
-    resources :agents, only: [:index, :show, :update]
+    resources :agents, only: [:index, :show, :create, :update, :destroy]
 
     resources :projects do
       member do

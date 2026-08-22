@@ -11,7 +11,7 @@ class WorkerTokenIssuer
     payload = {
       sub:     user.id,
       user:    user.id,
-      name:    display_name(user),
+      name:    user.display_name,
       project: project.id,
       iat:     Time.now.to_i,
       exp:     exp
@@ -20,13 +20,4 @@ class WorkerTokenIssuer
 
     JWT.encode(payload, secret, ALGORITHM)
   end
-
-  def self.display_name(user)
-    pref = user.user_preference
-    return pref.username if pref&.username.present?
-    full = [pref&.first_name, pref&.last_name].compact.join(' ').strip
-    return full if full.present?
-    user.email.split('@').first
-  end
-  private_class_method :display_name
 end

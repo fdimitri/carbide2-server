@@ -18,6 +18,21 @@ class Api::AgentsController < Api::BaseController
     render json: agent_json(find_agent)
   end
 
+  # slug is settable only here (immutable in #update). Client supplies it for
+  # both a blank "new agent" and a clone.
+  def create
+    agent = Agent.new(agent_params)
+    agent.slug          = params[:slug].to_s.strip
+    agent.allowed_tools = normalized_tools    if params.key?(:allowed_tools)
+    agent.sampling      = normalized_sampling if params.key?(:sampling)
+    agent.api_key       = params[:api_key] if params[:api_key].present?
+    agent.save!
+    render json: agent_json(agent), status: :created
+  rescue ActiveRecord::RecordInvalid => e
+    render json: { error: e.record.errors.full_messages.join(', ') },
+           status: :unprocessable_entity
+  end
+
   def update
     agent = find_agent
     agent.assign_attributes(agent_params)
@@ -32,6 +47,17 @@ class Api::AgentsController < Api::BaseController
            status: :unprocessable_entity
   end
 
+  def destroy
+    agent = find_agent
+    if agent.agent_conversations.exists?
+      render json: { error: 'This agent has conversations and cannot be deleted.' },
+             status: :conflict
+      return
+    end
+    agent.destroy!
+    head :no_content
+  end
+
   private
 
   def find_agent
@@ -41,7 +67,7 @@ class Api::AgentsController < Api::BaseController
   # api_key is handled separately (see #update); slug is immutable here.
   def agent_params
     params.permit(:name, :description, :provider_url, :model,
-                  :system_prompt, :role, :enabled, :shell_exec_enabled)
+                  :system_prompt, :role, :enabled, :shell_exec_enabled, :max_turns)
   end
 
   def normalized_tools
@@ -69,6 +95,7 @@ class Api::AgentsController < Api::BaseController
       role:               a.role,
       enabled:            a.enabled,
       shell_exec_enabled: a.shell_exec_enabled,
+      max_turns:          a.max_turns,
     }
   end
 end

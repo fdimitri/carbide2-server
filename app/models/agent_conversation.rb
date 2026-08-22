@@ -42,13 +42,15 @@ class AgentConversation < ApplicationRecord
 
   # Append a message row. Caller passes a hash matching the worker's
   # @history entries: role + content + tool_calls + tool_call_id + name.
-  def append!(turn:, role:, content: nil, tool_calls: nil, tool_call_id: nil, name: nil)
+  def append!(turn:, role:, content: nil, tool_calls: nil, tool_call_id: nil, name: nil,
+              user_id: nil)
     agent_messages.create!(
       turn:            turn,
       role:            role,
       content:         content,
       tool_call_id:    tool_call_id,
       name:            name,
+      user_id:         user_id,
       tool_calls_json: tool_calls && tool_calls.to_json,
     )
     update_column(:last_activity_at, Time.current)

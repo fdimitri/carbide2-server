@@ -28,7 +28,15 @@ class Agent < ApplicationRecord
   validates :model,        presence: true
   validates :role,         presence: true
 
+  # Per-agent tool-call loop budget (orchestration, not a sampling param).
+  # nil = use the worker's MAX_TURNS default.
+  validates :max_turns, numericality: { only_integer: true, greater_than: 0,
+                                        less_than_or_equal_to: 100 },
+                        allow_nil: true
+
   scope :enabled, -> { where(enabled: true) }
+
+  has_many :agent_conversations, dependent: :restrict_with_error
 
   ROLES = %w[general coder reviewer safety router].freeze
 

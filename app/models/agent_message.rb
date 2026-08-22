@@ -11,6 +11,8 @@
 #   'tool'      — tool result; tool_call_id ties to the assistant's call
 class AgentMessage < ApplicationRecord
   belongs_to :agent_conversation
+  # Optional: only role=user rows carry an author (see #79).
+  belongs_to :user, optional: true
 
   validates :turn, presence: true,
                    uniqueness: { scope: :agent_conversation_id }
