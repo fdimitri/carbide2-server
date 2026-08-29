@@ -11,6 +11,10 @@ class Project < ActiveRecord::Base
 
   after_create :ensure_project_setting!
 
+  # Stable control-owned project identity (== workspace uuid under 1:1).
+  # The local integer PK never leaves the pod; the token/mirror use this uuid.
+  before_validation :assign_uuid, on: :create
+
   # Default per-project workspace directory inside the shared projects volume.
   # Worker, FsLoader, VfsFlusher, ProjectContainer all agree on this layout.
   PROJECTS_ROOT = ENV.fetch('PROJECTS_ROOT', '/srv/projects').freeze
@@ -35,5 +39,14 @@ class Project < ActiveRecord::Base
     setting.save! if setting.changed? || setting.new_record?
     FileUtils.mkdir_p(setting.root_path) rescue nil
     setting
+  end
+
+  private
+
+  def assign_uuid
+    # The project uuid mirrors control's workspace uuid (== project uuid under
+    # 1:1), handed to the pod at launch. Fall back to a generated uuid only for
+    # local dev with no control plane.
+    self.uuid ||= ENV['WORKSPACE_PROJECT_UUID'].presence || SecureRandom.uuid
   end
 end
