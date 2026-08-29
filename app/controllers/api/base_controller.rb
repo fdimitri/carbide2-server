@@ -1,16 +1,9 @@
 # Base controller for all workspace REST API endpoints — verifies a
-# control-minted workspace:api JWT (ADR-023) and resolves the local user
-# mirror. The worker has its own path (workspace:rw, verified in worker.rb).
-#
-# Two distinct identities are exposed, deliberately:
-#   current_user  — the LOCAL User mirror (for scoping: current_user.projects)
-#   control_user_id — the control-plane user id (for record attribution and
-#     matching worker-broadcast user_id). The local id and control id are
-#     unrelated; the token only carries the control id.
+# control-minted workspace:api JWT (ADR-023) and resolves the LOCAL user
+# mirror (the users table every *.user_id FK in this pod points at). The
+# worker has its own path (workspace:rw, verified in worker.rb).
 class Api::BaseController < ActionController::API
   before_action :authenticate!
-
-  attr_reader :control_user_id
 
   private
 
@@ -33,7 +26,6 @@ class Api::BaseController < ActionController::API
       render json: { error: 'Invalid token scope or audience' }, status: :unauthorized and return
     end
 
-    @control_user_id = payload['user_id']
     @current_user = find_or_create_local_user!(payload['user_email'])
     unless @current_user
       render json: { error: 'Token does not match a known user' }, status: :unauthorized and return

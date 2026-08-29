@@ -15,6 +15,8 @@ Rails.application.routes.draw do
     namespace :v1 do
       get 'common/version', to: 'version#common'
       get 'server/version', to: 'version#server'
+      # Authenticated identity for THIS app's users table (workspace-local id).
+      get 'server/me',      to: 'me#show'
     end
 
     # Authentication (control-plane handled; workspace tokens are minted by control)
