@@ -13,8 +13,9 @@ class Api::BaseController < ActionController::API
       render json: { error: 'Missing authorization token' }, status: :unauthorized and return
     end
 
-    secret  = ENV.fetch('WORKER_JWT_SECRET')
-    payload, = JWT.decode(token, secret, true, { algorithm: 'HS256' })
+    # Signature is RS256, verified against the JWKS public keys (ADR-015) —
+    # never a shared secret.
+    payload = JwtVerifier.verify(token)
 
     # Control-format enforcement (ADR-023). Only workspace:api tokens are
     # accepted on the REST surface; workspace:rw is for the worker only.
