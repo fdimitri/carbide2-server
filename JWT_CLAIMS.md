@@ -22,7 +22,7 @@ at provision time, where this workspace reads it as `WORKER_JWT_SECRET`.
 | `user_id`    | integer | `42`                     | Control-plane DB primary key.                             |
 | `user_email` | string  | `alice@example.com`      | Denormalized for display + audit.                         |
 | `project_id` | integer | `42`                     | Must match `aud` suffix and `WORKSPACE_PROJECT_ID`.       |
-| `scope`      | string  | `workspace:rw`           | Currently always `workspace:rw`.                          |
+| `scope`      | string  | `workspace:rw` / `workspace:api` | `workspace:rw` authorizes the worker WS; `workspace:api` authorizes the workspace REST API. Scope selects the token's TTL. |
 
 ## Validation rules
 
@@ -33,7 +33,7 @@ The worker verifies, in order:
 3. `aud == "workspace:#{ENV['WORKSPACE_PROJECT_ID']}"`.
 4. `exp > now`.
 5. `project_id == ENV['WORKSPACE_PROJECT_ID'].to_i`.
-6. `scope` is in the allowlist `[workspace:rw]`.
+6. `scope` is in the allowlist `[workspace:rw, workspace:api]`.
 
 ## Future claims (reserved)
 

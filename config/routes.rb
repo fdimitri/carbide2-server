@@ -17,8 +17,7 @@ Rails.application.routes.draw do
       get 'server/version', to: 'version#server'
     end
 
-    # Authentication endpoints
-    post '/login',  to: 'auth#login'
+    # Authentication (control-plane handled; workspace tokens are minted by control)
     post '/signup', to: 'auth#signup'
 
     # User preferences

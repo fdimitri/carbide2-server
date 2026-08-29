@@ -15,7 +15,7 @@ class Api::ChatMessagesController < Api::BaseController
     text = params.dig(:chat_message, :text).to_s.strip
 
     message = channel.chat_messages.create!(
-      user: current_user,
+      user_id: control_user_id,
       name: current_user.email.split('@').first,
       text: text
     )
