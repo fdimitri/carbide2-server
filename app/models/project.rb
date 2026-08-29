@@ -44,9 +44,18 @@ class Project < ActiveRecord::Base
   private
 
   def assign_uuid
-    # The project uuid mirrors control's workspace uuid (== project uuid under
-    # 1:1), handed to the pod at launch. Fall back to a generated uuid only for
-    # local dev with no control plane.
-    self.uuid ||= ENV['WORKSPACE_PROJECT_UUID'].presence || SecureRandom.uuid
+    # The canonical project mirrors control's workspace uuid (== project uuid
+    # under 1:1), handed to the pod at launch. Only the canonical project gets
+    # it — a future second project must be pushed from control with its OWN
+    # uuid, never derived from the workspace env. NULL stays NULL: the pod does
+    # not fabricate stable identity control knows nothing about.
+    return unless canonical?
+    self.uuid ||= ENV['WORKSPACE_PROJECT_UUID'].presence
+  end
+
+  def canonical?
+    id == self.class.canonical.id
+  rescue ActiveRecord::RecordNotFound
+    false
   end
 end
