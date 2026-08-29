@@ -19,8 +19,11 @@ class Api::BaseController < ActionController::API
 
     # Control-format enforcement (ADR-023). Only workspace:api tokens are
     # accepted on the REST surface; workspace:rw is for the worker only.
-    # Identity is uuid-only (ADR-015); no integer claims.
-    unless payload['iss'] == 'carbide-control' && payload['scope'] == 'workspace:api'
+    # Audience guard: the token must name THIS workspace (uuid).
+    expected = ENV['WORKSPACE_PROJECT_UUID'].to_s
+    unless payload['iss'] == 'carbide-control' &&
+           payload['scope'] == 'workspace:api' &&
+           (expected.empty? || payload['aud'] == "workspace:#{expected}")
       render json: { error: 'Invalid token scope or issuer' }, status: :unauthorized and return
     end
 
