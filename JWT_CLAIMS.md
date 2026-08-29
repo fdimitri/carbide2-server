@@ -19,17 +19,16 @@ and holds no signing secret.
 | Claim        | Type    | Example                  | Notes                                                     |
 | ------------ | ------- | ------------------------ | --------------------------------------------------------- |
 | `iss`        | string  | `carbide-control`        | Constant. Workspace rejects tokens with any other issuer. |
-| `sub`        | string  | `user:42`                | `user:<control_plane_user_id>` (staged; `user_uuid` is the stable identity). |
-| `aud`        | string  | `workspace:42`           | `workspace:<project_id>` (staged integer guard; `workspace_uuid` is the stable identity). |
 | `exp`        | integer | `1733184000`             | Unix seconds. TTL: 5 minutes.                             |
 | `iat`        | integer | `1733183700`             | Unix seconds.                                             |
-| `user_id`    | integer | `42`                     | Control-plane DB primary key (staged; `user_uuid` is stable). |
 | `user_email` | string  | `alice@example.com`      | Denormalized for display + audit.                         |
-| `project_id` | integer | `42`                     | Control workspace id (staged; `project_uuid` is stable).  |
 | `user_uuid`  | string  | `<uuid>`                 | Stable control-side user identity.                        |
 | `workspace_uuid` | string | `<uuid>`              | Stable control-side workspace identity.                   |
 | `project_uuid`   | string | `<uuid>`              | Stable control-side project identity (== workspace_uuid under 1:1). |
 | `scope`      | string  | `workspace:rw` / `workspace:api` | `workspace:rw` authorizes the worker WS; `workspace:api` authorizes the workspace REST API. Scope selects the token's TTL. |
+
+No integer claims (`sub`/`aud`/`user_id`/`project_id`). Identity is uuid-only.
+
 
 ## Validation rules
 
@@ -37,10 +36,8 @@ The worker verifies, in order:
 
 1. Signature valid against the JWKS public key named by the token's `kid`.
 2. `iss == "carbide-control"`.
-3. `aud == "workspace:#{ENV['WORKSPACE_PROJECT_ID']}"`.
-4. `exp > now`.
-5. `project_id == ENV['WORKSPACE_PROJECT_ID'].to_i`.
-6. `scope` is in the allowlist `[workspace:rw, workspace:api]`.
+3. `exp > now`.
+4. `scope` is in the allowlist `[workspace:rw, workspace:api]`.
 
 ## Future claims (reserved)
 

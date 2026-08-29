@@ -19,14 +19,9 @@ class Api::BaseController < ActionController::API
 
     # Control-format enforcement (ADR-023). Only workspace:api tokens are
     # accepted on the REST surface; workspace:rw is for the worker only.
-    # `aud`/`project_id` are the staged integer workspace guard (cross-workspace
-    # replay protection); identity resolution below is by uuid (ADR-015).
-    expected_project = ENV['WORKSPACE_PROJECT_ID']&.to_i
-    unless payload['iss'] == 'carbide-control' &&
-           payload['scope'] == 'workspace:api' &&
-           payload['aud'] == "workspace:#{expected_project}" &&
-           payload['project_id'].to_i == expected_project
-      render json: { error: 'Invalid token scope or audience' }, status: :unauthorized and return
+    # Identity is uuid-only (ADR-015); no integer claims.
+    unless payload['iss'] == 'carbide-control' && payload['scope'] == 'workspace:api'
+      render json: { error: 'Invalid token scope or issuer' }, status: :unauthorized and return
     end
 
     @current_project = resolve_project(payload)
