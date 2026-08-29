@@ -165,5 +165,5 @@ project per host is the supported bare-metal shape.
 | `CARBIDE_BACKEND` | `local` | Terminal backend: `local` \| `docker` \| `kube` |
 | `WORKER_HOST` | `0.0.0.0` | Worker WS bind host |
 | `WORKER_PORT` | `8080` | Worker WS bind port |
-| `WORKER_JWT_SECRET` | — | Shared secret signing the WS auth JWT |
+| `CONTROL_JWKS_URL` | — | Public JWKS endpoint for verifying RS256 tokens (ADR-015) |
 | `VITE_WORKER_URL` | derived | Build-time client override for the worker WS URL |

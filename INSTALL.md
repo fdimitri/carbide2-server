@@ -60,8 +60,9 @@ out-of-the-box for local development; override these for non-local deploys:
 # Strong password if you expose Postgres beyond localhost
 POSTGRES_PASSWORD=carbide
 
-# JWT secret used to sign worker tokens (MUST be set in production)
-WORKER_JWT_SECRET=changeme-please
+# JWKS endpoint for verifying control-minted RS256 tokens (ADR-015)
+# The pod holds no signing secret; it fetches the public key from here.
+# CONTROL_JWKS_URL=http://control-plane.carbide-system.svc.cluster.local:3001/.well-known/jwks.json
 
 # CORS origins (comma-separated list of literal origins or /regex/ patterns).
 # Leave unset for the dev default (localhost / 127.0.0.1 / 192.168.x.x).

@@ -125,12 +125,9 @@ spec:
                   name: {{ .Values.postgres.credentialsSecret }}
                   key: password
 
-            # --- JWT ---
-            - name: WORKER_JWT_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.jwt.secretName }}
-                  key: secret
+            # --- JWT (ADR-015: RS256, verified against the control JWKS) ---
+            - name: CONTROL_JWKS_URL
+              value: {{ .Values.control.jwksUrl | quote }}
 
             # --- Rails host allowlist (LAN + cluster DNS + ingress host) ---
             - name: RAILS_DEV_HOSTS
