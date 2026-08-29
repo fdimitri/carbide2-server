@@ -56,14 +56,6 @@ class Api::ProjectsController < Api::BaseController
     render json: project_json(project)
   end
 
-  # POST /api/projects/:id/ws_token
-  # Returns a project-scoped JWT for the worker WebSocket connection
-  def ws_token
-    project = find_project
-    token   = WorkerTokenIssuer.issue!(user: current_user, project: project)
-    render json: { token: token, project_id: project.id }
-  end
-
   # GET /api/projects/:id/settings
   def settings
     project = find_project

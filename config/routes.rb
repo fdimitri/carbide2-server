@@ -33,7 +33,6 @@ Rails.application.routes.draw do
 
     resources :projects do
       member do
-        post  :ws_token
         patch :set_root
         get   :settings
         patch :settings, action: :update_settings
