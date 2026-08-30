@@ -19,18 +19,17 @@ and holds no signing secret.
 | Claim        | Type    | Example                  | Notes                                                     |
 | ------------ | ------- | ------------------------ | --------------------------------------------------------- |
 | `iss`        | string  | `carbide-control`        | Constant. Workspace rejects tokens with any other issuer. |
-| `sub`        | string  | `<user_uuid>`            | Subject (the user's stable uuid).                        |
-| `aud`        | string  | `workspace:<uuid>`       | Audience (the workspace's stable uuid). Workspace rejects mismatch. |
+| `sub`        | string  | `user:<uuid>`            | Subject — the user's stable uuid, typed `user:`.          |
+| `aud`        | string  | `workspace:<uuid>`       | Audience — the workspace's stable uuid, typed `workspace:`. Workspace rejects mismatch. |
 | `exp`        | integer | `1733184000`             | Unix seconds. TTL: 5 minutes.                             |
 | `iat`        | integer | `1733183700`             | Unix seconds.                                             |
 | `user_email` | string  | `alice@example.com`      | Denormalized for display + audit.                         |
-| `user_uuid`  | string  | `<uuid>`                 | Stable control-side user identity.                        |
-| `workspace_uuid` | string | `<uuid>`              | Stable control-side workspace identity.                   |
-| `project_uuid`   | string | `<uuid>`              | Stable control-side project identity (== workspace_uuid under 1:1). |
+| `project_uuid` | string | `<uuid>`               | Stable control-side project identity (== workspace uuid under 1:1). |
 | `scope`      | string  | `workspace:rw` / `workspace:api` | `workspace:rw` authorizes the worker WS; `workspace:api` authorizes the workspace REST API. Scope selects the token's TTL. |
 
-No integer identity claims (`user_id`/`project_id`). `sub` and `aud` carry
-uuids, never pod-local integers.
+Identity is **typed `type:uuid`** in the standard claims (`sub`/`aud`). The only
+custom identity claim is `project_uuid` (no standard JWT claim for a project).
+No integer identity claims (`user_id`/`project_id`).
 
 
 ## Validation rules

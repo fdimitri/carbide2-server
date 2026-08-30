@@ -51,7 +51,8 @@ class Api::BaseController < ActionController::API
   def resolve_local_user(payload)
     email = payload['user_email'].to_s.downcase.strip
     return nil if email.empty?
-    uuid  = payload['user_uuid'].presence
+    sub   = payload['sub'].to_s
+    uuid  = sub.start_with?('user:') ? sub.delete_prefix('user:') : nil
 
     user = uuid && User.find_by(control_uuid: uuid)
     return user if user
