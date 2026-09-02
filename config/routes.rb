@@ -17,6 +17,12 @@ Rails.application.routes.draw do
       get 'server/version', to: 'version#server'
       # Authenticated identity for THIS app's users table (workspace-local id).
       get 'server/me',      to: 'me#show'
+
+      # Agent conversation export (new-shape /api/v1/<backend>/<resource>).
+      namespace :server do
+        get 'projects/:project_id/agent_conversations/:uuid/export',
+            to: 'agent_conversations#export'
+      end
     end
 
     # Authentication (control-plane handled; workspace tokens are minted by control)
