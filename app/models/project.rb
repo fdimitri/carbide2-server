@@ -19,8 +19,15 @@ class Project < ActiveRecord::Base
   # project). This returns that single canonical project, creating it on
   # first call. Its primary key is LOCAL and unrelated to the control-plane
   # workspace id — never look a project up by the control-plane id.
+  #
+  # projects.uuid is a MIRROR of the control-owned workspace identity, handed
+  # to the pod as WORKSPACE_PROJECT_UUID. It is stamped here at creation time
+  # only; it is never derived from a user token or self-assigned on validation.
   def self.canonical
-    order(:id).first || create!(name: ENV.fetch('WORKSPACE_NAME', 'workspace'))
+    order(:id).first || create!(
+      name: ENV.fetch('WORKSPACE_NAME', 'workspace'),
+      uuid: ENV['WORKSPACE_PROJECT_UUID'].presence,
+    )
   end
 
   def default_root_path

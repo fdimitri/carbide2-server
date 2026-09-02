@@ -151,7 +151,7 @@ See [INSTALL.md](INSTALL.md) for the Compose walkthrough. Note: Compose and k3d 
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `WORKER_JWT_SECRET` | `replace_me` | Signs worker WebSocket tokens — **must change in production** |
+| `CONTROL_JWKS_URL` | (control-plane JWKS) | Public JWKS endpoint for verifying RS256 tokens (ADR-015) |
 | `RAILS_MASTER_KEY` | (from `config/master.key`) | Decrypts `config/credentials.yml.enc` — deliver via k8s Secret or env var, never commit |
 | `CARBIDE_BACKEND` | `local` | Terminal backend: `local`, `docker`, or `kube` |
 | `CARBIDE_SHELL_IMAGE` | `carbide2-shell:dev` | Image for per-project shell containers/pods |

@@ -15,10 +15,17 @@ Rails.application.routes.draw do
     namespace :v1 do
       get 'common/version', to: 'version#common'
       get 'server/version', to: 'version#server'
+      # Authenticated identity for THIS app's users table (workspace-local id).
+      get 'server/me',      to: 'me#show'
+
+      # Agent conversation export (new-shape /api/v1/<backend>/<resource>).
+      namespace :server do
+        get 'projects/:project_id/agent_conversations/:uuid/export',
+            to: 'agent_conversations#export'
+      end
     end
 
-    # Authentication endpoints
-    post '/login',  to: 'auth#login'
+    # Authentication (control-plane handled; workspace tokens are minted by control)
     post '/signup', to: 'auth#signup'
 
     # User preferences
@@ -33,7 +40,6 @@ Rails.application.routes.draw do
 
     resources :projects do
       member do
-        post  :ws_token
         patch :set_root
         get   :settings
         patch :settings, action: :update_settings

@@ -54,8 +54,8 @@ None of this needs code changes — the seams already exist:
 - **Worker binds its own host/port.** `WORKER_HOST` (default `0.0.0.0`) /
   `WORKER_PORT` (default `8080`) in
   [worker/worker.rb](worker/worker.rb) — `EM::WebSocket.start(host:, port:)`.
-  Auth is the JWT from `POST /api/projects/:id/ws_token`; the worker does not
-  care what path the WS connects on.
+  Auth is a control-plane-minted JWT (`iss: carbide-control`; see
+  JWT_CLAIMS.md); the worker does not care what path the WS connects on.
 - **Local terminal backend needs no container runtime.** `CARBIDE_BACKEND=local`
   (the default) does a host `PTY.spawn('/bin/bash')` with `cwd = project root`
   — see [worker/handlers/term_handlers.rb](worker/handlers/term_handlers.rb).
@@ -165,5 +165,5 @@ project per host is the supported bare-metal shape.
 | `CARBIDE_BACKEND` | `local` | Terminal backend: `local` \| `docker` \| `kube` |
 | `WORKER_HOST` | `0.0.0.0` | Worker WS bind host |
 | `WORKER_PORT` | `8080` | Worker WS bind port |
-| `WORKER_JWT_SECRET` | — | Shared secret signing the WS auth JWT |
+| `CONTROL_JWKS_URL` | — | Public JWKS endpoint for verifying RS256 tokens (ADR-015) |
 | `VITE_WORKER_URL` | derived | Build-time client override for the worker WS URL |

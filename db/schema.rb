@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_21_000000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_02_000000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -156,6 +156,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_000000) do
 
   create_table "project_settings", force: :cascade do |t|
     t.integer "agent_shell_busy_timeout_s", default: 60, null: false
+    t.integer "agent_shell_peek_tail_bytes", default: 1024, null: false
     t.datetime "created_at", null: false
     t.integer "flush_bytes"
     t.float "flush_interval_s"
@@ -172,6 +173,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_000000) do
     t.string "name"
     t.string "repo_url"
     t.datetime "updated_at", null: false
+    t.string "uuid"
+    t.index ["uuid"], name: "index_projects_on_uuid", unique: true
   end
 
   create_table "terminal_recordings", force: :cascade do |t|
@@ -210,6 +213,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_000000) do
   end
 
   create_table "users", force: :cascade do |t|
+    t.string "control_uuid"
     t.datetime "created_at", null: false
     t.datetime "current_sign_in_at"
     t.string "current_sign_in_ip"
@@ -224,6 +228,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_000000) do
     t.integer "sign_in_count", default: 0, null: false
     t.string "uid"
     t.datetime "updated_at", null: false
+    t.index ["control_uuid"], name: "index_users_on_control_uuid", unique: true
     t.index ["reset_password_token"], name: "index_users_on_reset_password_token", unique: true
   end
 

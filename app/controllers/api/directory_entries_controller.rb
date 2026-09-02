@@ -33,7 +33,7 @@ class Api::DirectoryEntriesController < Api::BaseController
     entry   = DirectoryEntry.create_file!(
       project_id: @project.id,
       srcpath:    path,
-      user_id:    @current_user_id,
+      user_id:    current_user.id,
       data:       content,
       mkdirp:     params[:mkdirp] == true || params[:mkdirp] == 'true'
     )
@@ -47,7 +47,7 @@ class Api::DirectoryEntriesController < Api::BaseController
   def create_dir
     path  = require_param!(:path)
     return unless path
-    entry = DirectoryEntry.mkdir_p!(project_id: @project.id, srcpath: path, user_id: @current_user_id)
+    entry = DirectoryEntry.mkdir_p!(project_id: @project.id, srcpath: path, user_id: current_user.id)
     render json: entry_json(entry), status: :created
   rescue ActiveRecord::RecordInvalid => e
     render json: { error: e.message }, status: :unprocessable_entity
@@ -137,7 +137,7 @@ class Api::DirectoryEntriesController < Api::BaseController
     dest = params[:dest].presence || '/'
     importer = ArchiveImporter.new(
       project:   @project,
-      user_id:   @current_user_id,
+      user_id:   current_user.id,
       dest_path: dest,
       filename:  uploaded.original_filename
     )
@@ -166,7 +166,7 @@ class Api::DirectoryEntriesController < Api::BaseController
     stats = FsLoader.new(
       project_id: @project.id,
       root_path:  root_path,
-      user_id:    @current_user_id,
+      user_id:    current_user.id,
       verbose:    false
     ).load!
 

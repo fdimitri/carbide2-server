@@ -1,21 +1,23 @@
 require "test_helper"
 require "tmpdir"
 require "fileutils"
-require "jwt"
 
 class Api::ClientsControllerTest < ActionDispatch::IntegrationTest
   def setup
     @store = Dir.mktmpdir("client-store")
     @prev_store = ENV["CARBIDE_CLIENT_STORE"]
     ENV["CARBIDE_CLIENT_STORE"] = @store
-    @prev_secret = ENV["WORKER_JWT_SECRET"]
-    ENV["WORKER_JWT_SECRET"] ||= "test-secret"
   end
 
   def teardown
     @prev_store.nil? ? ENV.delete("CARBIDE_CLIENT_STORE") : ENV["CARBIDE_CLIENT_STORE"] = @prev_store
-    ENV["WORKER_JWT_SECRET"] = @prev_secret if @prev_secret
     FileUtils.remove_entry(@store) if @store && File.directory?(@store)
+  end
+
+  # ADR-015: auth is RS256 via JWKS; the server test env has no control signing
+  # key, so stub the shared verifier for the duration of a request.
+  def with_stubbed_auth
+    JwtVerifier.stub(:verify, ->(token) { { 'user_email' => users(:test_user).email } }) { yield }
   end
 
   def write_build(name, sha, build_time:, label: nil)
@@ -27,8 +29,9 @@ class Api::ClientsControllerTest < ActionDispatch::IntegrationTest
     File.write(File.join(dir, "manifest.json"), JSON.generate(manifest))
   end
 
-  def token_for(user)
-    JWT.encode({ sub: user.id, exp: Time.now.to_i + 300 }, ENV.fetch("WORKER_JWT_SECRET"), "HS256")
+  def token_for(_user)
+    # Auth is stubbed in setup; any opaque bearer is fine.
+    "test-token"
   end
 
   test "requires authentication" do
@@ -40,7 +43,9 @@ class Api::ClientsControllerTest < ActionDispatch::IntegrationTest
     write_build("carbide2-client", "old", build_time: "2026-07-18T08:00:00Z")
     write_build("carbide2-client", "new", build_time: "2026-07-18T20:00:00Z", label: "rc2")
 
-    get "/api/clients", headers: { "Authorization" => "Bearer #{token_for(users(:test_user))}" }
+    with_stubbed_auth do
+      get "/api/clients", headers: { "Authorization" => "Bearer #{token_for(users(:test_user))}" }
+    end
 
     assert_response :success
     body = JSON.parse(@response.body)

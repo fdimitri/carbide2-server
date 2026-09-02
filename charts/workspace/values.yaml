@@ -46,14 +46,10 @@ postgres:
   # Workspace DB name. Defaults to "carbide_workspace_<projectId>".
   databaseName: ""
 
-# JWT secret. In production this is mirrored into the workspace namespace by
-# the control plane at provision time. For dev, helm generates it on first
-# install via the lookup() function in templates/jwt-secret.yaml.
-jwt:
-  secretName: workspace-jwt
-  # If you want to pin the secret value across re-installs, set this. Otherwise
-  # the chart generates a random one and stores it in the Secret.
-  secret: ""
+# JWT (ADR-015): the workspace verifies control-minted RS256 tokens against
+# the public JWKS endpoint. No signing secret is mirrored into the pod.
+control:
+  jwksUrl: "http://control-plane.carbide-system.svc.cluster.local:3001/.well-known/jwks.json"
 
 ingress:
   enabled: true

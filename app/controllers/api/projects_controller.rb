@@ -56,14 +56,6 @@ class Api::ProjectsController < Api::BaseController
     render json: project_json(project)
   end
 
-  # POST /api/projects/:id/ws_token
-  # Returns a project-scoped JWT for the worker WebSocket connection
-  def ws_token
-    project = find_project
-    token   = WorkerTokenIssuer.issue!(user: current_user, project: project)
-    render json: { token: token, project_id: project.id }
-  end
-
   # GET /api/projects/:id/settings
   def settings
     project = find_project
@@ -93,7 +85,8 @@ class Api::ProjectsController < Api::BaseController
   end
 
   def settings_params
-    params.permit(:root_path, :flush_interval_s, :flush_bytes, :shell_image)
+    params.permit(:root_path, :flush_interval_s, :flush_bytes, :shell_image,
+                  :agent_shell_peek_tail_bytes)
   end
 
   def project_json(project)
@@ -113,7 +106,8 @@ class Api::ProjectsController < Api::BaseController
       root_path:        setting.root_path,
       flush_interval_s: setting.flush_interval_s,
       flush_bytes:      setting.flush_bytes,
-      shell_image:      setting.shell_image
+      shell_image:      setting.shell_image,
+      agent_shell_peek_tail_bytes: setting.agent_shell_peek_tail_bytes
     }
   end
 end

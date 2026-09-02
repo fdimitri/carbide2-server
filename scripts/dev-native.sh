@@ -23,9 +23,6 @@ SERVER="$(cd "$ROOT/.." && pwd)"
 : "${CARBIDE2_CLIENT:=$SERVER/../carbide2-client}"
 export CARBIDE2_CLIENT
 
-: "${WORKER_JWT_SECRET:=password}"
-export WORKER_JWT_SECRET
-
 echo "[carbide2] starting rails..."
 bundle exec rails server -p 3000 -b 0.0.0.0 &
 RAILS_PID=$!
