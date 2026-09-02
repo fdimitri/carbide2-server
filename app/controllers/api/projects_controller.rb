@@ -85,7 +85,8 @@ class Api::ProjectsController < Api::BaseController
   end
 
   def settings_params
-    params.permit(:root_path, :flush_interval_s, :flush_bytes, :shell_image)
+    params.permit(:root_path, :flush_interval_s, :flush_bytes, :shell_image,
+                  :agent_shell_peek_tail_bytes)
   end
 
   def project_json(project)
@@ -105,7 +106,8 @@ class Api::ProjectsController < Api::BaseController
       root_path:        setting.root_path,
       flush_interval_s: setting.flush_interval_s,
       flush_bytes:      setting.flush_bytes,
-      shell_image:      setting.shell_image
+      shell_image:      setting.shell_image,
+      agent_shell_peek_tail_bytes: setting.agent_shell_peek_tail_bytes
     }
   end
 end

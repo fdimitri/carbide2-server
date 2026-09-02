@@ -9,4 +9,7 @@ class ProjectSetting < ApplicationRecord
   validates :agent_shell_busy_timeout_s,
             numericality: { greater_than: 0, less_than_or_equal_to: 600, only_integer: true },
             allow_nil: true
+  validates :agent_shell_peek_tail_bytes,
+            numericality: { greater_than: 0, only_integer: true },
+            allow_nil: false
 end
