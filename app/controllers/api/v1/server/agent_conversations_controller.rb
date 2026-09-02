@@ -9,6 +9,12 @@ class Api::V1::Server::AgentConversationsController < Api::BaseController
   def export
     convo = AgentConversation.find_by(uuid: params[:uuid], project_id: params[:project_id])
     return render json: { error: 'conversation not found' }, status: :not_found unless convo
+
+    # Must be a member of the project (not just able to see the conversation's
+    # visibility) — centralized project gate.
+    authorize_project_membership!(convo.project)
+    return if performed?
+
     return render json: { error: 'conversation is private' }, status: :forbidden unless convo.visible_to?(current_user.id)
 
     render json: export_json(convo)
