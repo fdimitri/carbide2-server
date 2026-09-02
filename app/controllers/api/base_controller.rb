@@ -19,11 +19,14 @@ class Api::BaseController < ActionController::API
 
     # Control-format enforcement (ADR-023). Only workspace:api tokens are
     # accepted on the REST surface; workspace:rw is for the worker only.
-    # Audience guard: the token must name THIS workspace (uuid).
+    # Audience guard: the token must name THIS workspace (uuid). WORKSPACE_PROJECT_UUID
+    # is always injected by the operator (required CR field), so its absence is
+    # a hard failure — never a skip of the audience check.
     expected = ENV['WORKSPACE_PROJECT_UUID'].to_s
     unless payload['iss'] == 'carbide-control' &&
            payload['scope'] == 'workspace:api' &&
-           (expected.empty? || payload['aud'] == "workspace:#{expected}")
+           !expected.empty? &&
+           payload['aud'] == "workspace:#{expected}"
       render json: { error: 'Invalid token scope or issuer' }, status: :unauthorized and return
     end
 
@@ -36,6 +39,14 @@ class Api::BaseController < ActionController::API
     render json: { error: 'Invalid or expired token' }, status: :unauthorized
   end
 
+  # Ensure the authenticated user is a member of the requested project.
+  # Centralized so every project-scoped route inherits it, not just the ones
+  # that remember to check (PR #15 / #4).
+  def authorize_project_membership!(project)
+    return if current_user.projects.exists?(project.id)
+    render json: { error: 'You do not belong to this project' }, status: :forbidden
+  end
+
   # Resolve the LOCAL project by its stable control-owned uuid (ADR-015). Under
   # 1:1 this is the workspace uuid, handed to the pod as WORKSPACE_PROJECT_UUID.
   # Fall back to the single canonical project only for local dev without control.
@@ -44,30 +55,20 @@ class Api::BaseController < ActionController::API
     (uuid && Project.find_by(uuid: uuid)) || Project.canonical
   end
 
-  # The workspace DB mirrors control users keyed by control_uuid, falling back
-  # to email. Creation is lazy and idempotent; membership on the resolved
-  # project is granted here, and control already decided the user belongs to
-  # this workspace when it minted the token.
+  # The workspace DB mirrors control users keyed by control_uuid (uuid-only;
+  # the token always carries sub: user:<uuid>). Creation is lazy and
+  # idempotent; membership on the resolved project is granted here, and
+  # control already decided the user belongs to this workspace when it minted
+  # the token.
   def resolve_local_user(payload)
-    email = payload['user_email'].to_s.downcase.strip
-    return nil if email.empty?
-    sub   = payload['sub'].to_s
-    uuid  = sub.start_with?('user:') ? sub.delete_prefix('user:') : nil
+    sub  = payload['sub'].to_s
+    uuid = sub.start_with?('user:') ? sub.delete_prefix('user:') : nil
+    return nil if uuid.blank?
 
-    user = uuid && User.find_by(control_uuid: uuid)
-    return user if user
-
-    user = User.find_by(email: email)
-    if user
-      user.update_column(:control_uuid, uuid) if uuid && user.control_uuid.nil?
-    else
-      random_password = SecureRandom.base58(32)
-      user = User.create!(
-        email: email,
-        control_uuid: uuid,
-        password: random_password,
-        password_confirmation: random_password
-      )
+    user = User.find_or_create_by!(control_uuid: uuid) do |u|
+      u.email              = payload['user_email'].to_s.downcase.strip.presence
+      u.password           = SecureRandom.base58(32)
+      u.password_confirmation = u.password
     end
     ProjectMembership.find_or_create_by!(user: user, project: @current_project)
     user
