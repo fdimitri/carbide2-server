@@ -11,10 +11,6 @@ class Project < ActiveRecord::Base
 
   after_create :ensure_project_setting!
 
-  # Stable control-owned project identity (== workspace uuid under 1:1).
-  # The local integer PK never leaves the pod; the token/mirror use this uuid.
-  before_validation :assign_uuid, on: :create
-
   # Default per-project workspace directory inside the shared projects volume.
   # Worker, FsLoader, VfsFlusher, ProjectContainer all agree on this layout.
   PROJECTS_ROOT = ENV.fetch('PROJECTS_ROOT', '/srv/projects').freeze
@@ -23,8 +19,15 @@ class Project < ActiveRecord::Base
   # project). This returns that single canonical project, creating it on
   # first call. Its primary key is LOCAL and unrelated to the control-plane
   # workspace id — never look a project up by the control-plane id.
+  #
+  # projects.uuid is a MIRROR of the control-owned workspace identity, handed
+  # to the pod as WORKSPACE_PROJECT_UUID. It is stamped here at creation time
+  # only; it is never derived from a user token or self-assigned on validation.
   def self.canonical
-    order(:id).first || create!(name: ENV.fetch('WORKSPACE_NAME', 'workspace'))
+    order(:id).first || create!(
+      name: ENV.fetch('WORKSPACE_NAME', 'workspace'),
+      uuid: ENV['WORKSPACE_PROJECT_UUID'].presence,
+    )
   end
 
   def default_root_path
@@ -39,23 +42,5 @@ class Project < ActiveRecord::Base
     setting.save! if setting.changed? || setting.new_record?
     FileUtils.mkdir_p(setting.root_path) rescue nil
     setting
-  end
-
-  private
-
-  def assign_uuid
-    # The canonical project mirrors control's workspace uuid (== project uuid
-    # under 1:1), handed to the pod at launch. Only the canonical project gets
-    # it — a future second project must be pushed from control with its OWN
-    # uuid, never derived from the workspace env. NULL stays NULL: the pod does
-    # not fabricate stable identity control knows nothing about.
-    return unless canonical?
-    self.uuid ||= ENV['WORKSPACE_PROJECT_UUID'].presence
-  end
-
-  def canonical?
-    id == self.class.canonical.id
-  rescue ActiveRecord::RecordNotFound
-    false
   end
 end
