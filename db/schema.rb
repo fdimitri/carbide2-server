@@ -173,6 +173,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_000000) do
     t.string "name"
     t.string "repo_url"
     t.datetime "updated_at", null: false
+    t.string "uuid"
+    t.index ["uuid"], name: "index_projects_on_uuid", unique: true
   end
 
   create_table "terminal_recordings", force: :cascade do |t|
@@ -211,6 +213,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_000000) do
   end
 
   create_table "users", force: :cascade do |t|
+    t.string "control_uuid"
     t.datetime "created_at", null: false
     t.datetime "current_sign_in_at"
     t.string "current_sign_in_ip"
@@ -225,6 +228,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_000000) do
     t.integer "sign_in_count", default: 0, null: false
     t.string "uid"
     t.datetime "updated_at", null: false
+    t.index ["control_uuid"], name: "index_users_on_control_uuid", unique: true
     t.index ["reset_password_token"], name: "index_users_on_reset_password_token", unique: true
   end
 
