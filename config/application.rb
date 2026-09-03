@@ -1,11 +1,5 @@
-require "devise"
-require_relative "boot"
-require "devise"
-require "rails/all"
-# Require gems and Devise early to ensure it's loaded before models
 require_relative "boot"
 require "rails/all"
-require "devise"
 
 # Require the gems listed in Gemfile, including any gems
 # you've limited to :test, :development, or :production.

@@ -66,9 +66,7 @@ class Api::BaseController < ActionController::API
     return nil if uuid.blank?
 
     user = User.find_or_create_by!(control_uuid: uuid) do |u|
-      u.email              = payload['user_email'].to_s.downcase.strip.presence
-      u.password           = SecureRandom.base58(32)
-      u.password_confirmation = u.password
+      u.email = payload['user_email'].to_s.downcase.strip.presence
     end
     ProjectMembership.find_or_create_by!(user: user, project: @current_project)
     user

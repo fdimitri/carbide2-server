@@ -386,7 +386,7 @@ class DirectoryEntry < ApplicationRecord
       data = data.scrub('') unless data.valid_encoding?
       FileChange.create!(
         directory_entry_id: entry.id,
-        user_id:            user_id || 1,
+        user_id:            user_id || User.system.id,
         change_type:        'setContents',
         change_data:        data,
         start_line:         0,

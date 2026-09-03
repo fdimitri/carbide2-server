@@ -36,11 +36,7 @@ gem "image_processing", "~> 1.2"
 # Use Rack CORS for handling Cross-Origin Resource Sharing (CORS), making cross-origin Ajax possible
 gem "rack-cors"
 
-# Authentication
-gem 'devise'
-# gem 'omniauth'
-# gem 'omniauth-github'
-# gem 'omniauth-google-oauth2'
+# Authentication — control mints tokens; the server verifies via the jwt gem.
 gem 'jwt'
 gem 'dotenv-rails', groups: [:development, :test]
 

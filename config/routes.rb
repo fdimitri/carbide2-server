@@ -1,6 +1,4 @@
 Rails.application.routes.draw do
-  devise_for :users
-
   # Root: serve the Vue SPA when the workspace image was built with the
   # dashboard-build stage; SpaController falls back to LandingController
   # when no SPA bundle is present (plain server-only deploys).
@@ -24,9 +22,6 @@ Rails.application.routes.draw do
             to: 'agent_conversations#export'
       end
     end
-
-    # Authentication (control-plane handled; workspace tokens are minted by control)
-    post '/signup', to: 'auth#signup'
 
     # User preferences
     get   '/preferences', to: 'preferences#show'
@@ -77,13 +72,8 @@ Rails.application.routes.draw do
   get "up" => "rails/health#show", as: :rails_health_check
 
   # Vue Router history-mode fallback — must come last.
-  # API, Devise, assets, and the health check are all matched above.
+  # API, assets, and the health check are all matched above.
   get '*path', to: 'spa#show', constraints: ->(req) {
     !req.path.start_with?('/api', '/users', '/rails', '/assets', '/clients', '/up')
   }
-
-  # To re-enable OAuth in the future:
-  # 1. Add :omniauthable to the User model.
-  # 2. Restore the omniauth_callbacks controller and route mapping.
-  # 3. Add session middleware if running in API-only mode.
 end

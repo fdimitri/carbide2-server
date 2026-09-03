@@ -1,7 +1,10 @@
-# Minimal User model placeholder for pre-alpha
+# Workspace-local mirror of a control user (ADR-015/023). The pod never
+# authenticates locally — control mints the tokens; this row only mirrors
+# identity, keyed by control_uuid. There is no password on this side.
 class User < ActiveRecord::Base
-  devise :database_authenticatable, :registerable,
-    :recoverable, :rememberable, :validatable, :trackable
+  # RFC 4122 all-zeros UUID, reserved and never minted by control, so the
+  # sentinel cannot collide with a real mirror user.
+  SYSTEM_UUID = '00000000-0000-0000-0000-000000000000'.freeze
 
   has_many :project_memberships, dependent: :destroy
   has_many :projects,            through:   :project_memberships
@@ -10,6 +13,12 @@ class User < ActiveRecord::Base
   has_one  :user_preference, dependent: :destroy
 
   after_create :create_user_preference
+
+  # The sentinel user owning unattributed (system/import) writes. Resolved
+  # idempotently; see FsLoader and DirectoryEntry.create_file!.
+  def self.system
+    find_or_create_by!(control_uuid: SYSTEM_UUID)
+  end
 
   # Canonical display-name resolution. Single source of truth so every call
   # site (worker broadcast, agent replay, legacy token minting) agrees on the
