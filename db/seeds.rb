@@ -1,16 +1,3 @@
-# Seeded dev user (Devise-compatible)
-dev_user = User.find_or_create_by!(email: 'dev@example.com') do |u|
-  u.password = 'password'
-  u.password_confirmation = 'password'
-end
-admin_user = User.find_or_create_by!(email: 'admin@example.com') do |u|
-  u.password = 'password'
-  u.password_confirmation = 'password'
-end
-
-# Ensure dev user has a preferences row (after_create handles new signups)
-dev_user.create_user_preference! unless dev_user.user_preference
-
 # Model B: a workspace pod hosts exactly ONE canonical project, created EMPTY.
 # Seeding is an explicit, in-pod action AFTER creation (clone-from-git banner,
 # archive upload, or just start typing) — see Api::ProjectsController#import_from_git
@@ -18,8 +5,6 @@ dev_user.create_user_preference! unless dev_user.user_preference
 # the project would never be "empty" and the clone-from-git banner would never
 # show. The name comes from WORKSPACE_NAME (control-plane display name) when set.
 project = Project.canonical
-ProjectMembership.find_or_create_by!(user: dev_user, project: project)
-ProjectMembership.find_or_create_by!(user: admin_user, project: project)
 
 # Local-dev convenience only: opt into a small sample tree with SEED_SAMPLE_FILES=1.
 # Never set in workspace pods — they must start empty.
@@ -39,7 +24,7 @@ if ActiveModel::Type::Boolean.new.cast(ENV['SEED_SAMPLE_FILES'])
     DirectoryEntry.create_file!(
       project_id: project.id,
       srcpath: path,
-      user_id: dev_user.id,
+      user_id: User.system.id,
       data: body,
       mkdirp: true
     )

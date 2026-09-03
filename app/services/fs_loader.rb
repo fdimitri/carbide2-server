@@ -41,7 +41,7 @@ class FsLoader
   def initialize(project_id:, root_path:, user_id: nil, verbose: true)
     @project_id = project_id
     @root_path  = File.expand_path(root_path)
-    @user_id    = user_id || 1
+    @user_id    = user_id || User.system.id
     @verbose    = verbose
     @stats      = { dirs: 0, files: 0, skipped: 0, existing: 0 }
   end
