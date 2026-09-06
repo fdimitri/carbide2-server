@@ -110,12 +110,8 @@ rails:
 
 # Worker (EventMachine WS server) knobs.
 worker:
-  # Backend used to spawn per-project shells:
-  #   kube   — kubectl exec into a per-project Pod (Dockerfile.shell image)
-  #   docker — legacy: PROJECT_CONTAINERS via host docker socket
-  #   local  — PTY.spawn /bin/bash in the workspace pod itself (no isolation)
-  backend: kube
-  shellImage: carbide2-shell:dev
+  # The shell is a control-owned StatefulSet (ADR-029); its image comes from
+  # the Workspace CR, not from here.
   shellImagePullPolicy: IfNotPresent
 
 # Agent (LLM) defaults applied at db:seed time to the Agents table. These

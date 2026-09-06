@@ -24,9 +24,7 @@ cd carbide2
 ```
 
 See the meta-repo [README](https://github.com/fdimitri/carbide2#readme) for the
-prerequisites table, pinned tool versions, and `deploy.rb` flags. For the
-alternative single-host **docker-compose** stack (not k3d), see
-[INSTALL.md](INSTALL.md) / [quickstart.sh](quickstart.sh) in this repo.
+prerequisites table, pinned tool versions, and `deploy.rb` flags.
 
 ## Day-to-day cluster shortcuts (still current)
 

@@ -133,11 +133,7 @@ spec:
             - name: RAILS_DEV_HOSTS
               value: {{ .Values.rails.devHosts | quote }}
 
-            # --- Worker shell backend (kube | docker | local) ---
-            - name: CARBIDE_BACKEND
-              value: {{ .Values.worker.backend | quote }}
-            - name: CARBIDE_SHELL_IMAGE
-              value: {{ .Values.worker.shellImage | quote }}
+            # --- Worker shell ---
             - name: CARBIDE_SHELL_PULL_POLICY
               value: {{ .Values.worker.shellImagePullPolicy | quote }}
             - name: CARBIDE_NAMESPACE

@@ -1,6 +1,6 @@
 # ProjectSetting — per-project runtime configuration.
 # One row per project (seeded by migration for existing projects).
-# Nil values mean "use system default" (enforced in VfsFlusher / ProjectContainer).
+# Nil values mean "use system default" (enforced in VfsFlusher).
 class ProjectSetting < ApplicationRecord
   belongs_to :project
 

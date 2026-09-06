@@ -11,7 +11,8 @@
 #
 # Build:
 #   docker build -t carbide2 .
-# Run via docker compose (preferred) — see docker-compose.yml.
+# Runs as the workspace pod's `workspace` container; the control operator
+# supplies every runtime env var.
 
 ARG RUBY_VERSION=4.0.0
 ARG META_SHA=unknown
@@ -91,9 +92,8 @@ RUN bundle exec bootsnap precompile -j 1 --gemfile app/ lib/ || true
 
 # Foreman launches Rails and the worker together per Procfile.
 # Tini is PID 1 for clean signal forwarding.
-# RAILS_ENV is intentionally NOT set here — docker-compose.yml provides the
-# runtime default (currently 'development'). Override via the compose file or
-# `docker run -e RAILS_ENV=production` for production deploys.
+# RAILS_ENV is intentionally NOT set here — the operator sets it on the
+# workspace Deployment (WORKSPACE_RAILS_ENV on the control plane).
 ENV PORT=3000 \
     WORKER_PORT=8080
 

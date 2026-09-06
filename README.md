@@ -11,7 +11,7 @@ A collaborative browser-based development environment. Browser terminals, a Mona
 What works today (June 2026):
 
 - **Authentication** — Devise email/password. JWT-signed worker tokens per session.
-- **Terminals** — PTY shells via the EventMachine worker. Create, destroy, rename, agent-accessible flag. Backend is configurable: local PTY, Docker container, or Kubernetes pod per project (`CARBIDE_BACKEND=local|docker|kube`).
+- **Terminals** — PTY shells via the EventMachine worker. Create, destroy, rename, agent-accessible flag. Each terminal is a `kubectl exec` into the workspace's control-owned shell pod (ADR-029).
 - **Terminal recordings** — asciinema v2 `.cast` files. Start/stop from the UI; REST API for browsing and downloading past sessions.
 - **Editor** — Monaco-based file pane with full read/write support. Edits travel as delta operations (`fs/write`) over the worker WebSocket, are stored as `FileChange` revision rows, and broadcast to co-viewers in real time (`applyRemoteChange`). Peer cursor positions are tracked and shown. Binary files show inline image preview or a download link.
 - **Virtual filesystem (VFS)** — In-database file store (Postgres `file_changes` revision log). Bidirectional disk sync:
@@ -137,14 +137,6 @@ printf 'FROM carbide2:dev\nCOPY worker/vfs_flusher.rb /app/worker/vfs_flusher.rb
 # Vue/Vite changes pick up via HMR — no restart needed
 ```
 
-**Alternative: Docker Compose** (no k8s):
-
-```bash
-./quickstart.sh --rebuild
-```
-
-See [INSTALL.md](INSTALL.md) for the Compose walkthrough. Note: Compose and k3d both bind ports 3000/5173/8080 — don't run both. `quickstart.sh` refuses to start if a `carbide-*` k3d cluster exists.
-
 ---
 
 ## Key environment variables
@@ -153,9 +145,6 @@ See [INSTALL.md](INSTALL.md) for the Compose walkthrough. Note: Compose and k3d 
 |---|---|---|
 | `CONTROL_JWKS_URL` | (control-plane JWKS) | Public JWKS endpoint for verifying RS256 tokens (ADR-015) |
 | `RAILS_MASTER_KEY` | (from `config/master.key`) | Decrypts `config/credentials.yml.enc` — deliver via k8s Secret or env var, never commit |
-| `CARBIDE_BACKEND` | `local` | Terminal backend: `local`, `docker`, or `kube` |
-| `CARBIDE_SHELL_IMAGE` | `carbide2-shell:dev` | Image for per-project shell containers/pods |
-| `CARBIDE_NAMESPACE` | (from service account) | k8s namespace for shell pods (`kube` backend) |
 | `PROJECTS_ROOT` | `/srv/projects` | Server-side root for project files |
 | `CARBIDE_FLUSH_INTERVAL` | `0.8` | VFS flush period in seconds |
 | `CARBIDE_FLUSH_BYTES` | `20` | VFS flush byte threshold |
@@ -192,7 +181,7 @@ charts/workspace/ Helm chart for per-workspace k8s deployment
 config/           Rails config, routes, credentials
 db/               Migrations, seeds, schema
 deploy/           CNPG cluster manifest
-scripts/          test-substrate.sh, import-host-dir.sh, smoke-test.sh, etc. (cluster bring-up lives in ../carbide2/scripts/deploy.rb)
+scripts/          test-substrate.sh, smoke-test.sh, etc. (cluster bring-up lives in ../carbide2/scripts/deploy.rb)
 ```
 
 ---

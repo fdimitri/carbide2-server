@@ -12,7 +12,8 @@ class Project < ActiveRecord::Base
   after_create :ensure_project_setting!
 
   # Default per-project workspace directory inside the shared projects volume.
-  # Worker, FsLoader, VfsFlusher, ProjectContainer all agree on this layout.
+  # Worker, FsLoader, VfsFlusher, and the operator's shell builder all agree on
+  # this layout.
   PROJECTS_ROOT = ENV.fetch('PROJECTS_ROOT', '/srv/projects').freeze
 
   # A workspace pod hosts exactly ONE project (Model B: Workspace == pod ==
@@ -30,8 +31,13 @@ class Project < ActiveRecord::Base
     )
   end
 
+  # Keyed by uuid, not id: the uuid is the control-owned workspace identity
+  # (== ControlProject.uuid), so the operator can name this same directory in
+  # the shell pod's subPath without knowing this database's primary keys.
   def default_root_path
-    File.join(PROJECTS_ROOT, id.to_s)
+    raise "project #{id} has no uuid; control must hand one down" if uuid.blank?
+
+    File.join(PROJECTS_ROOT, uuid)
   end
 
   # Creates the project_setting row (if missing) with a sane root_path

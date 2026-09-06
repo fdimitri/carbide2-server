@@ -6,7 +6,7 @@
 #
 # The Decider: the client is NOT baked into the image. It lives only in the
 # content-addressed store (see ClientRegistry) — the MinIO static tier in
-# cluster, or public/clients in dev-native. This loader resolves a *pinned*
+# cluster, or public/clients under test. This loader resolves a *pinned*
 # build and serves that build's index.html. The choice comes from a `?client=`
 # query param (which also pins a cookie for subsequent navigations) or the
 # `carbide_client` cookie, defaulting to the newest build of the default family.

@@ -1,12 +1,13 @@
-# Dockerfile.shell — base image for Carbide2 terminal containers.
+# Dockerfile.shell — the image the workspace shell StatefulSet runs (ADR-029).
 #
 # Build and tag:
 #   docker build -f Dockerfile.shell -t carbide2-shell .
 #
-# Override the image used by the worker with:
-#   CARBIDE_SHELL_IMAGE=carbide2-shell  (in dev.sh or .env)
+# Which repository/tag a workspace gets is `spec.shell.imageRepo`/`imageTag` on
+# its Workspace CR, resolved by control from the template and Settings.
 #
-# The project directory is mounted at /workspace by ProjectContainer.
+# The project directory is mounted at /workspace by the operator's shell
+# builder (a subPath of the workspace PVC keyed by project UUID).
 # Customise this file freely: add languages, tools, dotfiles, etc.
 
 FROM ubuntu:24.04
