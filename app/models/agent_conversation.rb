@@ -15,6 +15,7 @@ class AgentConversation < ApplicationRecord
   belongs_to :agent
   has_many :agent_messages, -> { order(:turn) }, dependent: :destroy
   has_many :agent_turns, -> { order(:start_turn) }, dependent: :destroy
+  has_many :agent_turn_usage, -> { order(:created_at) }, dependent: :destroy
 
   # ADR-032 fork lineage: a fork names its ancestor; the ancestor may have many
   # forks. Recursive ancestry is walked via forked_from_id (parent until nil).
