@@ -14,6 +14,7 @@ class AgentConversation < ApplicationRecord
   belongs_to :user      # who started it (attribution)
   belongs_to :agent
   has_many :agent_messages, -> { order(:turn) }, dependent: :destroy
+  has_many :agent_turns, -> { order(:start_turn) }, dependent: :destroy
 
   validates :uuid, presence: true, uniqueness: true
   validates :visibility, inclusion: { in: VISIBILITIES }

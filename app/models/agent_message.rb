@@ -17,6 +17,8 @@ class AgentMessage < ApplicationRecord
   belongs_to :agent_conversation
   # Optional: only role=user rows carry an author (see #79).
   belongs_to :user, optional: true
+  # ADR-032: groups the contiguous rows of one logical exchange (nullable).
+  belongs_to :agent_turn, optional: true
 
   validates :turn, presence: true,
                    uniqueness: { scope: :agent_conversation_id }
