@@ -10,7 +10,7 @@
 # Cost is NOT returned by the API — derived later from a model→price table.
 class CreateAgentTurnUsage < ActiveRecord::Migration[8.1]
   def change
-    create_table :agent_turn_usage do |t|
+    create_table :agent_turn_usages do |t|
       t.references :agent_conversation, null: false, foreign_key: true
       t.references :agent_message,      null: true,  foreign_key: true
       t.integer :prompt_tokens
@@ -19,7 +19,7 @@ class CreateAgentTurnUsage < ActiveRecord::Migration[8.1]
       t.integer :cached_tokens   # usage.prompt_tokens_details.cached_tokens; nullable
       t.timestamps
     end
-    add_index :agent_turn_usage, [:agent_conversation_id, :created_at],
+    add_index :agent_turn_usages, [:agent_conversation_id, :created_at],
               name: 'idx_agent_turn_usage_recent'
   end
 end
