@@ -9,6 +9,5 @@ class AddForkLineageToAgentConversations < ActiveRecord::Migration[8.1]
     add_reference :agent_conversations, :forked_from,
                   foreign_key: { to_table: :agent_conversations }
     add_column :agent_conversations, :forked_at_turn, :integer
-    add_index :agent_conversations, :forked_from_id
   end
 end

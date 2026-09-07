@@ -20,6 +20,5 @@ class CreateAgentTurns < ActiveRecord::Migration[8.1]
     add_index :agent_turns, [:agent_conversation_id, :start_turn], unique: true
 
     add_reference :agent_messages, :agent_turn, foreign_key: true
-    add_index :agent_messages, :agent_turn_id
   end
 end
