@@ -38,8 +38,6 @@ Rails.application.routes.draw do
         patch :set_root
         get   :settings
         patch :settings, action: :update_settings
-        get   :export
-        post  :import
       end
       resources :chat_channels, only: [:index, :create], controller: 'chat_channels' do
         resources :chat_messages, only: [:index, :create], controller: 'chat_messages'
@@ -51,6 +49,7 @@ Rails.application.routes.draw do
           get    'content', action: :content
           get    'stat',    action: :stat
           get    'blob',    action: :blob
+          get    'download', action: :download
           post   'files',   action: :create_file
           post   'dirs',    action: :create_dir
           patch  'rename',  action: :rename

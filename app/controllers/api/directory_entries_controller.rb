@@ -124,6 +124,36 @@ class Api::DirectoryEntriesController < Api::BaseController
               filename:    entry.cur_name
   end
 
+  # GET /api/projects/:project_id/fs/download?path=/src
+  # Download a file or directory. A file streams its raw bytes (attachment); a
+  # directory (including root '/', i.e. the whole project) is streamed as a
+  # .tar.gz with entries relative to that directory.
+  def download
+    path = params[:path].to_s.strip
+    path = '/' if path.empty?
+
+    setting   = @project.project_setting
+    root_path = (setting&.root_path.presence || @project.default_root_path).to_s.chomp('/')
+    return render json: { error: 'no project directory' }, status: :unprocessable_entity if root_path.empty?
+
+    disk_path = File.join(root_path, path.sub(%r{\A/}, ''))
+    return render json: { error: 'not found' }, status: :not_found unless File.exist?(disk_path)
+
+    if File.directory?(disk_path)
+      name = path == '/' ? 'project' : File.basename(path)
+      archive = Tempfile.new(['carbide-download', '.tar.gz'])
+      archive.binmode
+      ProjectArchive.export_to(disk_path, archive)
+      archive.flush
+      send_file archive.path, type: 'application/gzip', disposition: 'attachment',
+                 filename: "#{name}.tar.gz"
+    else
+      content_type = Marcel::MimeType.for(Pathname.new(disk_path)) rescue 'application/octet-stream'
+      send_file disk_path, type: content_type, disposition: 'attachment',
+                 filename: File.basename(path)
+    end
+  end
+
   # POST /api/projects/:project_id/fs/upload
   # multipart/form-data:
   #   file:        (required) uploaded file; .zip/.tar/.tar.gz/.tgz are extracted, anything else stored as-is
