@@ -54,8 +54,10 @@ class AgentMessage < ApplicationRecord
   def to_history_entry
     case role
     when 'tool'
-      entry = { role: 'tool', tool_call_id: tool_call_id, name: name }
-      entry[:content] = content.to_s unless evicted?
+      # A tool message MUST carry a `content` field (the provider rejects the
+      # role otherwise); an evicted result keeps the structural fields and sets
+      # content to the empty string rather than omitting it.
+      entry = { role: 'tool', tool_call_id: tool_call_id, name: name, content: evicted? ? '' : content.to_s }
       entry
     when 'assistant'
       h = { role: 'assistant', content: content }
