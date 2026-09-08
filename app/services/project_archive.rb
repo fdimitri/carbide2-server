@@ -6,11 +6,12 @@
 # FsLoader ignore list. Import extracts to disk and then re-scans into the DBFS
 # so the explorer reflects the restored files.
 #
-# Sanitization: tar entry names are arbitrary strings (absolute paths and `..`
-# are permitted by the format), so both directions normalize against the root
-# and reject traversal. Symlinks are skipped (not archived, not followed) for
-# now — preserving them faithfully needs a symlink policy that is out of scope
-# for this first cut.
+# NOTE: this is a FAITHFUL extractor, not a hardened one. Entry names are taken
+# as-is (joined under the root); no traversal filtering, no symlink policy, no
+# size caps. It is meant to round-trip archives WE produced, run by the same
+# (already non-root) user inside the pod. If untrusted archives are ever
+# accepted, the extractor must be redesigned for that threat model separately —
+# do not mistake this for one that is.
 require 'zlib'
 require 'find'
 require 'rubygems/package'
@@ -45,20 +46,12 @@ class ProjectArchive
     def import_from(src, root_path)
       root = File.expand_path(root_path)
       FileUtils.mkdir_p(root)
-      stats = { files: 0, dirs: 0, skipped: 0 }
+      stats = { files: 0, dirs: 0 }
 
       gz = Zlib::GzipReader.new(src)
       Gem::Package::TarReader.new(gz) do |tar|
         tar.each do |entry|
-          rel = safe_rel(entry.full_name)
-          next if rel.empty?
-
-          target = File.expand_path(File.join(root, rel))
-          unless target == root || target.start_with?(root + '/')
-            stats[:skipped] += 1
-            next
-          end
-
+          target = File.expand_path(File.join(root, entry.full_name))
           if entry.directory?
             FileUtils.mkdir_p(target)
             stats[:dirs] += 1
@@ -66,24 +59,13 @@ class ProjectArchive
             FileUtils.mkdir_p(File.dirname(target))
             File.binwrite(target, entry.read)
             stats[:files] += 1
-          else
-            # symlink / hardlink / special entry — skip, don't follow.
-            stats[:skipped] += 1
           end
+          # symlink / hardlink / special entry — skipped.
         end
       end
       stats
     ensure
       gz&.close rescue nil
-    end
-
-    private
-
-    # Strip leading slashes and drop `.`/`..` components (zip-slip guard).
-    def safe_rel(name)
-      name.to_s.gsub('\\', '/').sub(%r{\A/+}, '').split('/')
-          .reject { |p| p.empty? || p == '.' || p == '..' }
-          .join('/')
     end
   end
 end
