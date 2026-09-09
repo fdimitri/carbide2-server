@@ -20,6 +20,8 @@ ARG CLIENT_SHA=unknown
 ARG SERVER_SHA=unknown
 ARG WORKER_SHA=unknown
 ARG BUILD_TIME=unknown
+ARG VERSION=unknown
+ARG CODENAME=unknown
 FROM docker.io/library/ruby:$RUBY_VERSION-slim AS base
 
 WORKDIR /app
@@ -66,10 +68,18 @@ ARG META_SHA=unknown
 ARG SERVER_SHA=unknown
 ARG WORKER_SHA=unknown
 ARG BUILD_TIME=unknown
+ARG VERSION=unknown
+ARG CODENAME=unknown
 ENV CARBIDE_META_SHA=$META_SHA \
     CARBIDE_SERVER_SHA=$SERVER_SHA \
     CARBIDE_WORKER_SHA=$WORKER_SHA \
-    CARBIDE_BUILD_TIME=$BUILD_TIME
+    CARBIDE_BUILD_TIME=$BUILD_TIME \
+    CARBIDE_VERSION=$VERSION \
+    CARBIDE_CODENAME=$CODENAME
+# OCI labels — the release version + codename, so the registry's image manifest
+# (config.Labels) is self-describing without running the image.
+LABEL org.carbide.version=$VERSION \
+      org.carbide.codename=$CODENAME
 
 # Copy gems from the build stage
 COPY --from=gems "${BUNDLE_PATH}" "${BUNDLE_PATH}"

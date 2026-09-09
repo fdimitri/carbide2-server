@@ -12,6 +12,15 @@
 
 FROM ubuntu:24.04
 
+# Release version + codename, stamped at build time by the meta repo's
+# build.rb/deploy.rb. As an OCI label (not env — the shell is just a terminal,
+# it doesn't report version at runtime) so the registry manifest is
+# self-describing.
+ARG VERSION=unknown
+ARG CODENAME=unknown
+LABEL org.carbide.version=$VERSION \
+      org.carbide.codename=$CODENAME
+
 # Prevent apt from prompting for timezone etc.
 ENV DEBIAN_FRONTEND=noninteractive
 

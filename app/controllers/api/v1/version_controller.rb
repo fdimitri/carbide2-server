@@ -23,6 +23,8 @@ class Api::V1::VersionController < ActionController::API
   def common_payload
     {
       service: "server",
+      version: value("CARBIDE_VERSION"),
+      codename: value("CARBIDE_CODENAME"),
       sha: sha("CARBIDE_SERVER_SHA"),
       built_at: value("CARBIDE_BUILD_TIME"),
       components: {
