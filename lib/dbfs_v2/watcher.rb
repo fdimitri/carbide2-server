@@ -1,4 +1,6 @@
 # frozen_string_literal: true
+require 'tmpdir'
+
 module DbfsV2
   # Watcher — inotify sync from the working area (the PVC) back into the DBFS.
   #
@@ -105,10 +107,7 @@ module DbfsV2
       return unless event.flags.include?(:close_write) || event.flags.include?(:moved_to)
       return unless File.file?(abs)
 
-      raw = File.binread(abs, [File.size(abs), 8192].min)
-      binary = raw.include?("\x00".b) || !raw.dup.force_encoding('UTF-8').valid_encoding?
-
-      if binary
+      if self.class.binary_file?(abs)
         ingest_binary(abs, srcpath)
         return
       end
@@ -116,9 +115,30 @@ module DbfsV2
       ingest_text(abs, srcpath)
     end
 
-    # --- binary: one ingest function, guarded read --------------------------
+    public
 
-    def ingest_binary(abs, srcpath)
+    # Content sniff shared by every consumer that decides text vs binary for a
+    # file on disk: a NUL in the first 8 KiB, or bytes that are not valid UTF-8
+    # (so Latin-1 and friends are preserved byte-for-byte rather than lossily
+    # transcoded through the text path).
+    def self.binary_file?(abs)
+      raw = File.binread(abs, [File.size(abs), 8192].min).to_s
+      binary_bytes?(raw)
+    end
+
+    def self.binary_bytes?(raw)
+      raw = raw.to_s.b
+      raw.include?("\x00".b) || !raw.dup.force_encoding('UTF-8').valid_encoding?
+    end
+
+    # --- binary: one ingest function, guarded read --------------------------
+    #
+    # Public so an event-loop adapter (the carbide2 worker's VfsWatcher) can run
+    # the same absorb logic from its own inotify pump. `guard_factory` builds a
+    # fresh guard per attempt; the default is this watcher's ReadGuard, which
+    # only sees events this watcher's own #handle has noted.
+    def ingest_binary(abs, srcpath, guard_factory: nil)
+      guard_factory ||= ->(path) { ReadGuard.new(self, path) }
       # Ensure a binary node exists (resurrect/create/promote on first sight).
       node = @store.find(srcpath)
       if node.nil?
@@ -133,7 +153,7 @@ module DbfsV2
         res = DbfsV2::Ingest.call(
           store: @store, path: srcpath, source_path: abs,
           staging_dir: @staging_dir, cache: @cache, blob_store: @blob_store,
-          guard: ReadGuard.new(self, abs)
+          guard: guard_factory.call(abs)
         )
         break unless res[:status] == :discarded  # the newer state is on disk now
       end
@@ -142,13 +162,23 @@ module DbfsV2
 
     # --- text: setContents (loose sync) -------------------------------------
 
-    def ingest_text(abs, srcpath)
+    # Returns { status: :created | :changed | :noop, node:, revisions: [...] }.
+    # Public for the same reason as #ingest_binary.
+    #
+    # `base_revision_id` is the revision the file on disk was last written from
+    # (the flusher knows it). When given, the external setContents is anchored
+    # there, so it is diffed against what the external writer actually saw and
+    # OT-merged with anything written to DBFS since — instead of being diffed
+    # against the current head, which would silently revert those writes.
+    # Overlaps raise ConflictError (decisions #16). nil keeps the blind
+    # head-relative behavior.
+    def ingest_text(abs, srcpath, base_revision_id: nil)
       node = @store.find(srcpath)
 
       if node.nil?
         content = File.read(abs, encoding: 'UTF-8', invalid: :replace, undef: :replace, replace: '')
-        @store.create_file(srcpath, content: content)
-        return
+        created = @store.create_file(srcpath, content: content)
+        return { status: :created, node: created, revisions: [] }
       end
 
       target = node.resolve || node
@@ -158,10 +188,14 @@ module DbfsV2
       end
       current = @store.read(target.path)
       content = File.read(abs, encoding: 'UTF-8', invalid: :replace, undef: :replace, replace: '')
-      return if content == current
+      return { status: :noop, node: target, revisions: [] } if content == current
 
-      @store.write(target.path, Delta.new('setContents', { data: content }), user_id: nil)
+      revs = @store.write(target.path, Delta.new('setContents', { data: content }),
+                          base_revision_id: base_revision_id, user_id: nil)
+      { status: :changed, node: target, revisions: revs }
     end
+
+    private
 
     # --- read-in-flight bookkeeping -----------------------------------------
 
