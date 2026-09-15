@@ -130,9 +130,20 @@ module DbfsV2
       [[sc], [sc]]
     end
 
+    # Transform each of `ops` past all of `others`. Both lists are SAME-SPACE
+    # (every prim in a list is in the one base coordinate space, as diff_prims,
+    # to_prims and apply_prims use them), so `others` cannot be folded in list
+    # order: after the first transform the op is in base+other1 space while
+    # other2 is still in base space, and an op right of other1 gets compared
+    # against other2 at the wrong offset (an insert could land on the wrong
+    # line). Folded right-to-left (descending start, original order on ties) the
+    # same-space list IS a valid chained sequence — each prim only shifts
+    # offsets beyond itself — which is exactly how apply_prims/deltas_for apply
+    # them, so each step compares like with like.
     def transform_list(ops, others)
+      chained = others.each_with_index.sort_by { |o, i| [-o.start, i] }.map(&:first)
       ops.flat_map do |op|
-        others.reduce([op]) { |acc, other| acc.flat_map { |o| transform_one(o, other) } }
+        chained.reduce([op]) { |acc, other| acc.flat_map { |o| transform_one(o, other) } }
       end
     end
 
@@ -146,7 +157,7 @@ module DbfsV2
     # Apply right-to-left (descending start) so each prim's coords stay valid;
     # the emitted sequence is a valid chained patch for the caller.
     def deltas_for(prims, buf)
-      prims.sort_by { |p| -p.start }.map do |p|
+      prims.each_with_index.sort_by { |p, i| [-p.start, i] }.map(&:first).map do |p|
         d = to_delta(p, buf)
         Delta.new(d[:type], d.reject { |k, _| k == :type }).apply_to(buf)
         d

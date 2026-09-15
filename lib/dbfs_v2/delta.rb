@@ -217,6 +217,9 @@ module DbfsV2
 
     # Insert `text` at (line, char). `text` may contain newlines.
     def buffer_insert(buffer, line, char, text)
+      # "".split("\n", -1) is [], which the splice below can't handle; an empty
+      # insert is a no-op.
+      return if text.empty?
       line = [[line, 0].max, buffer.lines.length - 1].min
       buffer.lines[line] ||= ''
       char = [char, buffer.lines[line].length].min
