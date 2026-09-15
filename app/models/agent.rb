@@ -96,6 +96,24 @@ class Agent < ApplicationRecord
     end
   end
 
+  # Assign from client input, normalizing on the way in so the socket path
+  # (worker) and the REST path (AgentsController) store identical values. Both
+  # write through these setters rather than each normalizing for itself.
+  def allowed_tools=(value)
+    super(Array(value).map(&:to_s).reject(&:blank?))
+  end
+
+  def sampling=(value)
+    super(
+      case value
+      when nil    then {}
+      when Hash   then value
+      when String then (JSON.parse(value) rescue {})
+      else {}
+      end
+    )
+  end
+
   # Assign peak hours from client input. Accepts an array of hashes or a JSON
   # string; nil clears the field. Anything else is stored as-is so
   # #peak_hours_windows_are_valid rejects it rather than silently coercing a
