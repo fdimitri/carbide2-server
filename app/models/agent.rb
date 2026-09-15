@@ -40,11 +40,11 @@ class Agent < ApplicationRecord
 
   ROLES = %w[general coder reviewer safety router].freeze
 
-  # UTC weekdays for peak_hours windows. Stored lowercase; matched against
-  # the UTC day (Date#wday / JS getUTCDay), never a local weekday.
+  # Weekdays a peak_hours window may name. Stored lowercase; matched against
+  # the weekday in the WINDOW'S OWN zone (see the client's peakHours.js).
   WEEKDAYS = %w[sun mon tue wed thu fri sat].freeze
 
-  # "HH:MM" in UTC, 00:00-23:59.
+  # "HH:MM" wall clock, 00:00-23:59, in the window's own zone.
   TIME_OF_DAY = /\A([01]\d|2[0-3]):[0-5]\d\z/
 
   validate :peak_hours_windows_are_valid
@@ -70,8 +70,14 @@ class Agent < ApplicationRecord
 
   # Peak-hours windows as an array of hashes regardless of how the DB returned
   # the column (SQLite/Postgres differ on json columns, same as allowed_tools).
-  # Each window: { "days" => [weekday…], "start" => "HH:MM", "end" => "HH:MM" }.
-  # An empty `days` means every day. All times are UTC.
+  #
+  # Each window is stored AS ENTERED: the days it covers, its times, and the
+  # timezone those times are in.
+  #   { "days" => [weekday…], "start" => "HH:MM", "end" => "HH:MM", "tz" => "America/New_York" }
+  # An empty `days` means every day. `tz` absent means "UTC" (windows written
+  # before the field existed). Times are NOT converted to UTC on write: a
+  # recurring window is anchored to a local clock, so converting it would make
+  # it drift across a DST boundary and would discard the clock the user meant.
   def peak_hours_windows
     raw = case peak_hours
           when String then (JSON.parse(peak_hours) rescue [])
@@ -85,6 +91,7 @@ class Agent < ApplicationRecord
         'days'  => Array(w['days']).map { |d| d.to_s.downcase }.select { |d| WEEKDAYS.include?(d) },
         'start' => w['start'].to_s,
         'end'   => w['end'].to_s,
+        'tz'    => w['tz'].to_s.strip,
       }
     end
   end
@@ -120,9 +127,15 @@ class Agent < ApplicationRecord
 
   private
 
-  # Enforce the documented shape: days ⊆ WEEKDAYS, start/end are HH:MM UTC,
-  # and the window is non-degenerate. Anything else is a client bug worth
-  # rejecting rather than silently normalizing away.
+  # Enforce the documented shape: days ⊆ WEEKDAYS, start/end are HH:MM wall
+  # clock, tz is a zone the runtime actually knows, and the window is
+  # non-degenerate. Anything else is a client bug worth rejecting rather than
+  # silently normalizing away.
+  #
+  # The tz is validated against TZInfo (the tz database ActiveSupport already
+  # depends on) rather than an allow-list here: the client offers a longer list
+  # than any hand-maintained one would match, and an unknown zone would make the
+  # window untranslatable at evaluation time rather than merely wrong.
   def peak_hours_windows_are_valid
     raw = case peak_hours
           when String then (JSON.parse(peak_hours) rescue nil)
@@ -148,14 +161,27 @@ class Agent < ApplicationRecord
       start_t = w['start'].to_s
       end_t   = w['end'].to_s
       unless start_t.match?(TIME_OF_DAY)
-        errors.add(:peak_hours, "window #{i} start must be HH:MM UTC")
+        errors.add(:peak_hours, "window #{i} start must be HH:MM")
       end
       unless end_t.match?(TIME_OF_DAY)
-        errors.add(:peak_hours, "window #{i} end must be HH:MM UTC")
+        errors.add(:peak_hours, "window #{i} end must be HH:MM")
       end
       if start_t.match?(TIME_OF_DAY) && start_t == end_t
         errors.add(:peak_hours, "window #{i} start and end are the same")
       end
+
+      tz = w['tz'].to_s.strip
+      if tz.present? && !known_time_zone?(tz)
+        errors.add(:peak_hours, "window #{i} has unknown timezone: #{tz}")
+      end
     end
+  end
+
+  # True when the runtime can resolve `tz` as an IANA zone name. An empty value
+  # is allowed and means UTC (see #peak_hours_windows).
+  def known_time_zone?(tz)
+    ActiveSupport::TimeZone[tz].present? || TZInfo::Timezone.get(tz).present?
+  rescue TZInfo::InvalidTimezoneIdentifier
+    false
   end
 end

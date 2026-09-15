@@ -97,6 +97,9 @@ class Api::AgentsController < Api::BaseController
         'days'  => Array(h['days'] || h[:days]).map { |d| d.to_s.downcase }.reject(&:blank?),
         'start' => (h['start'] || h[:start]).to_s,
         'end'   => (h['end'] || h[:end]).to_s,
+        # The zone the times were entered in. Part of the window — dropping it
+        # here would silently reinterpret every window as UTC.
+        'tz'    => (h['tz'] || h[:tz]).to_s.strip,
       }
     end
   end
