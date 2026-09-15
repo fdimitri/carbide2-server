@@ -163,6 +163,10 @@ Recorded honestly; none corrupt the revision log today.
 
 ## #11 — Auto-merge is a three-way merge at the DAG base
 
+> **Superseded in part by #29:** merges now replay the source's edits through
+> `Rebase`; the three-way content merge is the fallback, and its diff no longer
+> refines hunks to char splices.
+
 `merge_auto` computes the DAG merge base, then does a real three-way merge:
 diff the base against each head into prims (both in base coordinates),
 OT-transform source's prims past target's, and apply both. Already-merged edits
@@ -182,7 +186,8 @@ sequential edits) is gone — that replay path was removed.
 
 ## #12 — setContents, opaque transform, and cache-vs-transaction ordering
 
-- **setContents is diffable, not an opaque clobber.** `to_prims` diffs the
+- **setContents is diffable, not an opaque clobber** (its diff claims whole
+  lines since #29). `to_prims` diffs the
   new content against the parent content (line-based multi-hunk diff) so a
   `setContents` means "these are my changes" and merges with concurrent edits.
   A genuine full rewrite degenerates to `replace [0, len) -> new`, which
@@ -715,3 +720,57 @@ binaries was a regression). Text is still flushed.
 **Limits:** `mmap`'d writes are not detected — policy is that users exclude
 mmap'd files in their project. The watcher's remote-write blindness applies to the
 working area, not the byte store.
+
+## #29 — Same-line rule for snapshots; merges replay edits (Frank's call)
+
+**Problem.** A whole-file snapshot (a `setContents`: an external change the
+watcher absorbs, an agent's full-file write, a user-resolved or content merge
+commit) carries no edits, so the server diffs it (`Transform.diff_prims`). A
+diff is a guess and can line up differently from what happened. With hunks
+refined to minimal char splices, two changes on one line could be combined into
+garbled text and reported clean. Found by the client OT port's merge property
+test, both confirmed in Ruby:
+
+- base `<b.1><b.2>`: ours renames `b.1` to `o.1` (refined to replace `b`), theirs
+  deletes `<b.1>` (refined to delete `1><b.`); no overlap, merged `<o.2>`;
+- Myers matched a moved blank line, so theirs' insert diffed as delete
+  `1><c.2><c.` plus reinsert; ours' insert landed inside it: `<c.o.1><3>`.
+
+The same diff is used on the live path, so typing on a line while an external
+tool rewrote it produced the second shape too.
+
+**Decision (Frank chose "same line + replay branches").**
+
+- **Snapshots claim whole lines.** `diff_prims` emits one prim per line hunk,
+  not refined. A hunk that rewrites or removes lines carries `claim: :lines`
+  (`:lines_eof` when it runs to the end of the text); any other change touching
+  one of those lines is `ambiguous?`: a delete/replace intersecting them, or an
+  insert inside them or at the start of the first (unless it adds whole lines,
+  text ending in a newline). A hunk that only adds lines is an insert with
+  `claim: :before`: it touches no line, and at a tie goes before any other
+  insert (a plain insert there meant the start of the old line). Edits on other
+  lines still merge.
+- **Merges replay edits.** `merge_auto` rebases the source's first-parent
+  revisions since the merge base onto the target (`Rebase.compute`), as the
+  live path does, and commits them as linear revisions; the last one is the
+  merge commit (second parent = source head) and stores the bridge, so merging
+  the same branch again finds its base through the bridge. Edits on the same
+  line of two branches merge. A snapshot in the source's history is diffed
+  when replayed, so it follows the same-line rule.
+- **Content merge is the fallback,** when the source has no first-parent path
+  from the merge base (it merged the target in). It keeps the one-commit
+  `setContents` merge and the same-line rule.
+- `merge_conflicts?` runs the same computation as `merge_auto` on either path,
+  so they agree; a replay conflict reports the two regions as before
+  (`OverlapConflict#regions`).
+
+**Costs.** More conflicts where a snapshot is involved: an external rewrite of a
+line someone is typing on is refused on the live path (the watcher's existing
+conflict handling: logged, not applied), and two snapshots touching one line
+conflict. A merge commit is no longer always a `setContents`.
+
+Tests: `same_line_rule_test.rb` (the rule, both garbling cases, the live path,
+replayed merges, the content fallback, and a random property over real-edit
+and snapshot branches); the client OT port mirrors it and
+`tests/parity` checks the two agree.
+

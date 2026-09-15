@@ -116,15 +116,16 @@ class BranchAtRevisionTest < Minitest::Test
   end
 end
 
-class MergePlantedSetContentsTest < Minitest::Test
+class MergeCommitStaleEditTest < Minitest::Test
   include DbfsV2TestHelpers
   def setup = @s = setup_store
   def d(t, p) = DbfsV2::Delta.new(t, p)
 
-  # An auto-merge writes a setContents merge commit. A later concurrent edit
-  # based on a PRE-merge revision must transform against it and converge, not
-  # corrupt (setContents is now a single atomic/opaque prim).
-  def test_stale_edit_against_merge_setcontents_converges
+  # An auto-merge replays the source's edits onto the target as linear
+  # revisions (the last one is the merge commit). A later concurrent edit based
+  # on a PRE-merge revision transforms against those real edits and keeps
+  # everyone's text.
+  def test_stale_edit_against_merge_commit_converges
     f = @s.create_file('/f', content: "x\n")
     @s.branch('/f', 'feature')
     @s.write('/f', d('insertDataSingleLine', { startLine: 1, startChar: 0, data: 'm' }), branch: 'main')
@@ -133,14 +134,14 @@ class MergePlantedSetContentsTest < Minitest::Test
 
     res = @s.merge('/f', target: 'main', source: 'feature', auto: true)
     assert res[:merged]
-    assert_equal 'setContents', res[:rev].change_type
+    assert res[:replayed]
+    assert res[:rev].merge_commit?
 
-    # concurrent stale edit based on the pre-merge head
+    # concurrent stale edit based on the pre-merge head, after the 'm'
     @s.write('/f', d('insertDataSingleLine', { startLine: 1, startChar: 1, data: '!' }), base_revision_id: pre_merge_head)
 
-    # must not raise and must produce deterministic, well-formed content
     out = @s.read('/f')
-    refute_nil out
-    assert_includes out, 'x'
+    assert_equal %w[! f m x], out.delete("\n").chars.sort, "lost or duplicated text: #{out.inspect}"
+    assert_operator out.index('!'), :>, out.index('m'), "the stale edit moved before its anchor: #{out.inspect}"
   end
 end

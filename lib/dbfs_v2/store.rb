@@ -321,7 +321,7 @@ module DbfsV2
       node = resolve(path) || find(path)
       raise "no such file: #{path}" unless node
       if auto
-        Merge.merge_auto(node, target_name: target, source_name: source, user_id: user_id)
+        Merge.merge_auto(node, target_name: target, source_name: source, user_id: user_id, store: self)
       elsif resolved.nil?
         Merge.fast_forward!(node, target_name: target, source_name: source, user_id: user_id)
       else

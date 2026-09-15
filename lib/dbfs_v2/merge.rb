@@ -5,8 +5,11 @@ module DbfsV2
   # Fast-forward: if `target`'s head is an ancestor of `source`'s head, just
   # move the target branch pointer forward (no new revision).
   #
-  # Auto-merge: a real three-way merge at the DAG merge base (see
-  # #auto_merge_content); overlapping writes are surfaced as a conflict.
+  # Auto-merge: the source branch's edits since the DAG merge base are replayed
+  # onto the target through Rebase (#replay_plan, #replay!). Without edit
+  # history to replay, a three-way content merge at the merge base
+  # (#auto_merge_content). Either way overlapping changes, and two changes to
+  # the same line when one side is a whole-file snapshot, are a conflict.
   #
   # User-resolved: create a merge revision whose first parent is target's head
   # and second parent is source's head, with change_type setContents carrying
@@ -114,15 +117,28 @@ module DbfsV2
       end
     end
 
-    # Conflict detection and the auto-merge content computation share ONE
-    # definition of "conflict": diff each side against the DAG merge base
-    # (setContents included, as a diff) and ask Transform#ambiguous? whether any
-    # write regions overlap. The previous version walked each branch's revision
-    # LIST and treated a setContents as rewriting the whole file, so it disagreed
-    # with auto_merge_content (spurious conflicts on disjoint setContents edits;
-    # and it missed insert-inside-replace).
+    # Conflict detection and the auto-merge share ONE computation per path, so
+    # merge_conflicts? and merge_auto cannot disagree:
+    #   * replay (the normal case, see #replay_plan): the source branch's own
+    #     edits are rebased past the target's, as the live write path does, and
+    #     a conflict is what Rebase.compute refuses;
+    #   * content (no edit history to replay): diff each side against the DAG
+    #     merge base and ask Transform#ambiguous?.
+    # Either way a snapshot diff claims the whole lines it changes, so two
+    # changes to the same line conflict rather than garble (decisions #29).
     # Returns [] if clean, else [{ target:, source: }] with the regions involved.
     def conflicts(file_node, target_head_id, source_head_id)
+      if (plan = replay_plan(file_node, target_head_id, source_head_id))
+        begin
+          Rebase.compute(plan[:base_content], plan[:authored], plan[:concurrent], label: file_node.path)
+          return []
+        rescue OverlapConflict => e
+          return e.regions
+        rescue ConflictError
+          return [{ target: [], source: [] }]
+        end
+      end
+
       base_id = lowest_common_ancestor(file_node, target_head_id, source_head_id)
       base = base_id ? Content.at(file_node, base_id) : ''
       ours   = Transform.diff_prims(base, Content.at(file_node, target_head_id), 'ours')
@@ -130,6 +146,42 @@ module DbfsV2
       return [] unless Transform.ambiguous?(ours, theirs)
 
       [{ target: regions_of(ours), source: regions_of(theirs) }]
+    end
+
+    # How to replay `source_head_id` onto `target_head_id`, or nil when there is
+    # no edit history to replay (fall back to the content merge):
+    #   { base_content:, authored: [Delta], concurrent: [Delta] }
+    # authored: the source's first-parent revisions after the merge base.
+    # concurrent: what the target has seen since the base (Rebase.concurrent_since:
+    # its first-parent revisions, or an earlier replay's bridge and the
+    # revisions after it, which is what makes merging a branch twice work).
+    # Branches with no common ancestor (cut from a file with no revision yet)
+    # replay their whole histories from empty.
+    def replay_plan(file_node, target_head_id, source_head_id)
+      base_id = lowest_common_ancestor(file_node, target_head_id, source_head_id)
+      if base_id
+        authored = Rebase.authored_since(file_node, base_id, source_head_id)
+        concurrent = Rebase.concurrent_since(file_node, base_id, target_head_id)
+        return nil unless authored && concurrent
+
+        { base_content: Content.at(file_node, base_id), authored: authored, concurrent: concurrent }
+      else
+        authored = whole_history(file_node, source_head_id)
+        concurrent = whole_history(file_node, target_head_id)
+        return nil unless authored && concurrent
+
+        { base_content: '', authored: authored, concurrent: concurrent }
+      end
+    end
+
+    # Every revision from genesis to `head_id` on its first-parent chain, or nil
+    # when the chain doesn't reach a genesis revision.
+    def whole_history(file_node, head_id)
+      index = Chain.revision_index(file_node)
+      chain = Chain.ancestor_ids(head_id, index)
+      return nil if chain.empty? || index[chain.first].parent_id
+
+      chain.map { |rid| Rebase.revision_delta(index[rid]) }
     end
 
     def regions_of(prims)
@@ -146,11 +198,18 @@ module DbfsV2
       conflicts(file_node, target.head_revision_id, source.head_revision_id)
     end
 
-    # Auto-merge: diff each side against the DAG base and combine. Returns:
-    #   { merged: true, content:, rev: }            on success
+    # Auto-merge. Returns:
+    #   { merged: true, content:, rev:, replayed: true, revisions: } replayed
+    #   { merged: true, content:, rev: }            content merge commit
     #   { merged: true, fast_forward: true, head: } on fast-forward
     #   { merged: false, reason:, conflicts: }      on conflict / unmergeable
-    def merge_auto(file_node, target_name:, source_name:, user_id: nil)
+    #
+    # Replay (needs `store`, which Store#merge passes): the source's edits are
+    # rebased onto the target one at a time and committed as linear revisions;
+    # the last one records the source head as its second parent and stores the
+    # bridge (see Rebase). Without history to replay, the merged content is
+    # committed as one setContents merge commit.
+    def merge_auto(file_node, target_name:, source_name:, user_id: nil, store: nil)
       target = file_node.branches.find_by!(name: target_name)
       source = file_node.branches.find_by!(name: source_name)
       return { merged: false, reason: 'source has no head' } unless source.head_revision_id
@@ -175,6 +234,10 @@ module DbfsV2
 
         DocumentCache.invalidate(file_node.id, target_name)
         return { merged: true, fast_forward: true, head: source.head_revision_id }
+      end
+
+      if store && (plan = replay_plan(file_node, target.head_revision_id, source.head_revision_id))
+        return replay!(store, file_node, target, source, plan, user_id: user_id)
       end
 
       # Shared, diff-based conflict gate — the SAME check auto_merge_content
@@ -223,6 +286,43 @@ module DbfsV2
       { merged: true, content: content, rev: rev }
     end
 
+    # Commit a replay plan made against `target.head_revision_id`. As with the
+    # content merge, a write that landed on the target since the plan aborts
+    # the merge rather than being skipped.
+    def replay!(store, file_node, target, source, plan, user_id: nil)
+      aborted = false
+      result = nil
+      begin
+        ActiveRecord::Base.transaction do
+          locked = Branch.lock.find(target.id)
+          if locked.head_revision_id != target.head_revision_id
+            aborted = true
+            next
+          end
+
+          res = Rebase.compute(plan[:base_content], plan[:authored], plan[:concurrent], label: file_node.path)
+          out = res[:deltas]
+          # Carrier for the second parent + bridge when every source edit
+          # transformed away (the target already made the same change).
+          out << Delta.new('insertDataSingleLine', { startLine: 0, startChar: 0, data: '' }) if out.empty?
+          revs = out.map do |d|
+            store.write(file_node.path, d, base_revision_id: locked.reload.head_revision_id,
+                                           branch: target.name, user_id: user_id)
+          end.flatten
+          last = revs.last
+          last.update_columns(second_parent_id: source.head_revision_id, bridge: res[:bridge].to_json)
+          result = { merged: true, replayed: true, content: res[:content], rev: last, revisions: revs }
+        end
+      rescue OverlapConflict => e
+        return { merged: false, reason: 'conflict', conflicts: e.regions, error: e.message }
+      rescue ConflictError => e
+        return { merged: false, reason: 'conflict', conflicts: [{ target: [], source: [] }], error: e.message }
+      end
+      return { merged: false, reason: 'target advanced concurrently; re-check' } if aborted
+
+      result
+    end
+
     # Merged content, using a real three-way merge at the DAG base: diff the
     # base against each head into prims (same base coordinate space), then
     # OT-transform source's prims past target's and apply both. This handles
@@ -237,7 +337,8 @@ module DbfsV2
       ours_prims   = Transform.diff_prims(base_content, ours_content, 'ours')
       theirs_prims = Transform.diff_prims(base_content, theirs_content, 'theirs')
 
-      # Overlapping write regions cannot be auto-merged; surface a conflict.
+      # Overlapping write regions (including two changes to one claimed line)
+      # cannot be auto-merged; surface a conflict.
       raise ConflictError, 'overlapping changes' if Transform.ambiguous?(ours_prims, theirs_prims)
 
       theirs_prime = Transform.transform_list(theirs_prims, ours_prims)

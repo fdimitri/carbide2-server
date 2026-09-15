@@ -3,7 +3,16 @@ require_relative 'myers'
 
 module DbfsV2
   module Transform
-    Prim = Struct.new(:start, :finish, :text, :priority) do
+    # `claim` marks a prim taken from a diff of a whole-file snapshot
+    # (setContents, a merge with no history to replay); real edits have none.
+    #   :lines      it rewrites or removes whole lines, each ending in a newline;
+    #               any other change touching one of them is ambiguous
+    #   :lines_eof  the same, for lines running to the end of the text
+    #   :before     it only adds whole lines at a line start; it touches no
+    #               existing line, and goes before any other same-point insert
+    #               (a plain insert there meant the start of the old line)
+    # See decisions #29.
+    Prim = Struct.new(:start, :finish, :text, :priority, :claim) do
       def insert?  = start == finish
       def delete?  = start < finish && text.empty?
       def replace? = start < finish && !text.empty?
@@ -38,13 +47,18 @@ module DbfsV2
       delta.pcre_replace?
     end
 
-    # Diff old -> new into a list of atomic replace prims (multi-hunk, LINE
-    # based). Lines are tokenized WITH their trailing newline (except the last),
-    # so each hunk maps exactly to a flat char range with no phantom-newline
-    # bookkeeping. Used so setContents/merge can be treated as "these are my
-    # changes" and merged with concurrent edits. A genuine full rewrite
-    # degenerates to replace [0,len) -> new, which overlaps everything and is a
-    # conflict via #ambiguous?.
+    # Diff old -> new into prims, one per LINE hunk (Myers over lines tokenized
+    # WITH their trailing newline, so each hunk is an exact flat char range).
+    # Used so a setContents, or a merge that has no edit history to replay, can
+    # be treated as "these are my changes" and merged with concurrent edits.
+    #
+    # A diff only guesses what was edited, and the guess can line up differently
+    # from what happened, so its changes are not refined to minimal splices: a
+    # hunk that rewrites or removes lines is one prim over those whole lines,
+    # with a claim on them (see Prim). Two changes on the same line then conflict
+    # instead of being spliced into garbled text (decisions #29). A hunk that
+    # only adds lines between existing ones is a plain insert: it touches no
+    # existing line.
     def diff_prims(old, new, pri)
       return [] if old == new
       old_t = diff_tokens(old)
@@ -53,26 +67,23 @@ module DbfsV2
       offs = [0]
       old_t.each { |t| offs << (offs.last + t.length) }
       hunks.filter_map do |os, oe, ns, ne|
-        old_text = old_t[os...oe].join
-        new_text = new_t[ns...ne].join
-        # Refine the hunk to a minimal splice (common char prefix/suffix), so a
-        # within-line insert is an insert prim, not a whole-line replace.
-        p = 0
-        p += 1 while p < old_text.length && p < new_text.length && old_text[p] == new_text[p]
-        s = 0
-        s += 1 while s < (old_text.length - p) && s < (new_text.length - p) &&
-                     old_text[old_text.length - 1 - s] == new_text[new_text.length - 1 - s]
-        start  = offs[os] + p
-        finish = offs[os] + old_text.length - s
-        text   = new_text[p...(new_text.length - s)].to_s
+        start  = offs[os]
+        finish = offs[oe]
+        text   = new_t[ns...ne].join
         next if start == finish && text.empty?
-        Prim.new(start, finish, text, pri)
+        next Prim.new(start, finish, text, pri, :before) if os == oe
+
+        eof = oe == old_t.length && !old_t.last.end_with?("\n")
+        Prim.new(start, finish, text, pri, eof ? :lines_eof : :lines)
       end
     end
 
     # Lines including their trailing newline (the last line may have none), so
     # concatenating the tokens reproduces the string exactly.
+    # The empty string is one empty line, as in Buffer.
     def diff_tokens(str)
+      return [''] if str.empty?
+
       lines = str.split("\n", -1)
       lines.each_with_index.map { |l, i| i < lines.length - 1 ? l + "\n" : l }
     end
@@ -99,11 +110,32 @@ module DbfsV2
       [[p, n - s, p, m - s]]
     end
 
-    # True when a replace primitive overlaps another primitive's region, or an
-    # insert falls inside a replace's region (insert-inside-replace).
+    # True when a replace primitive overlaps another primitive's region, an
+    # insert falls inside a replace's region (insert-inside-replace), or either
+    # side touches a line the other side's snapshot diff claimed.
     def ambiguous?(a_prims, b_prims)
       a_prims.any? { |ap| ap.replace? && b_prims.any? { |bp| regions_overlap?(ap, bp) } } ||
-        b_prims.any? { |bp| bp.replace? && a_prims.any? { |ap| regions_overlap?(ap, bp) } }
+        b_prims.any? { |bp| bp.replace? && a_prims.any? { |ap| regions_overlap?(ap, bp) } } ||
+        a_prims.any? { |ap| b_prims.any? { |bp| touches_claim?(ap, bp) || touches_claim?(bp, ap) } }
+    end
+
+    # Does `o` change a line that claimed prim `c` rewrites? c covers whole
+    # lines [c.start, c.finish); a newline belongs to the line it ends.
+    #   * a delete/replace touches them if its range intersects;
+    #   * an insert touches them if it lands inside, at the start of the first
+    #     line (unless it only adds whole lines before it: text ending in a
+    #     newline), or at the very end when the claim runs to end of text.
+    def touches_claim?(c, o)
+      return false unless %i[lines lines_eof].include?(c.claim)
+
+      if o.insert?
+        p = o.start
+        return true if c.start < p && p < c.finish
+        return true if p == c.finish && c.claim == :lines_eof
+        p == c.start && !o.text.end_with?("\n")
+      else
+        o.start < c.finish && c.start < o.finish
+      end
     end
 
     def regions_overlap?(x, y)
@@ -143,7 +175,11 @@ module DbfsV2
     def transform_list(ops, others)
       chained = others.each_with_index.sort_by { |o, i| [-o.start, i] }.map(&:first)
       ops.flat_map do |op|
-        chained.reduce([op]) { |acc, other| acc.flat_map { |o| transform_one(o, other) } }
+        chained.reduce([op]) do |acc, other|
+          # A prim keeps its claim wherever it moves (ambiguous? has already
+          # refused anything that would cut into a claimed region).
+          acc.flat_map { |o| transform_one(o, other).each { |t| t.claim = o.claim } }
+        end
       end
     end
 
@@ -189,11 +225,22 @@ module DbfsV2
     end
 
     def transform_ii(a, b)
-      if a.start < b.start || (a.start == b.start && a.priority <= b.priority)
+      if a.start < b.start || (a.start == b.start && insert_first?(a, b))
         [a]
       else
         [Prim.new(a.start + b.ilength, a.finish + b.ilength, a.text, a.priority)]
       end
+    end
+
+    # At a tie, a snapshot's added lines go before a plain insert (which meant
+    # the start of the existing line); otherwise priority decides.
+    def insert_first?(a, b)
+      a_lines = a.claim == :before && !(b.claim == :before)
+      b_lines = b.claim == :before && !(a.claim == :before)
+      return true if a_lines
+      return false if b_lines
+
+      a.priority <= b.priority
     end
 
     def transform_id(a, b)

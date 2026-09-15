@@ -54,17 +54,21 @@ module DbfsV2
       end
     end
 
+    # Both ways merge_auto computes a merge before taking the commit lock: the
+    # content merge (auto_merge_content) and the replay plan (replay_plan).
     module MergeHook
-      def auto_merge_content(*args, **kw)
-        raise ReviewHooks.force_error if ReviewHooks.force_error
-        result = super
-        if ReviewHooks.after_auto_merge
-          cb = ReviewHooks.after_auto_merge
-          ReviewHooks.after_auto_merge = nil
-          ReviewHooks.hook_fired = true
-          cb.call
+      %i[auto_merge_content replay_plan].each do |m|
+        define_method(m) do |*args, **kw|
+          raise ReviewHooks.force_error if ReviewHooks.force_error
+          result = super(*args, **kw)
+          if ReviewHooks.after_auto_merge
+            cb = ReviewHooks.after_auto_merge
+            ReviewHooks.after_auto_merge = nil
+            ReviewHooks.hook_fired = true
+            cb.call
+          end
+          result
         end
-        result
       end
     end
 
