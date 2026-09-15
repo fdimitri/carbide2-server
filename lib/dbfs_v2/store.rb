@@ -277,11 +277,20 @@ module DbfsV2
 
     # --- branching / merging ----------------------------------------------
 
-    def branch(path, name, from: Branch::MAIN)
+    # `at_revision:` forks the new branch at a specific revision of this file
+    # instead of at `from`'s head.
+    def branch(path, name, from: Branch::MAIN, at_revision: nil)
       node = resolve(path) || find(path)
       raise "no such file: #{path}" unless node
-      src = node.branches.find_by!(name: from)
-      node.branches.find_or_create_by!(name: name) { |nb| nb.head_revision_id = src.head_revision_id }
+      head =
+        if at_revision
+          raise ActiveRecord::RecordNotFound, "revision #{at_revision} is not a revision of #{path}" unless
+            Revision.exists?(id: at_revision, file_node_id: node.id)
+          at_revision
+        else
+          node.branches.find_by!(name: from).head_revision_id
+        end
+      node.branches.find_or_create_by!(name: name) { |nb| nb.head_revision_id = head }
     end
 
     def branches(path)
@@ -308,11 +317,12 @@ module DbfsV2
     # `expected_head` pins the target head the caller resolved against; if the
     # target advanced since, a user-resolved merge is refused rather than
     # recording a commit whose parent silently skipped the concurrent write.
-    def merge(path, target:, source:, resolved: nil, user_id: nil, auto: false, expected_head: nil)
+    #   base_id:              -> (auto) a known merge base; see Merge#conflicts
+    def merge(path, target:, source:, resolved: nil, user_id: nil, auto: false, expected_head: nil, base_id: nil)
       node = resolve(path) || find(path)
       raise "no such file: #{path}" unless node
       if auto
-        Merge.merge_auto(node, target_name: target, source_name: source, user_id: user_id)
+        Merge.merge_auto(node, target_name: target, source_name: source, user_id: user_id, base_id: base_id)
       elsif resolved.nil?
         Merge.fast_forward!(node, target_name: target, source_name: source, user_id: user_id)
       else

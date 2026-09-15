@@ -33,36 +33,84 @@ class ProjectFsTest < Minitest::Test
 
   def test_blind_batch_applies_each_change_at_the_head
     @s.create_file('/f', content: "abc\n")
-    revs = ProjectFs.write_batch!(@s, '/f', [ins(0, 3, 'd'), ins(0, 4, 'e')])
-    assert_equal 2, revs.size
+    r = ProjectFs.write_batch!(@s, '/f', [ins(0, 3, 'd'), ins(0, 4, 'e')])
+    assert_equal :blind, r.mode
+    assert_equal 2, r.revisions.size
     assert_equal "abcde\n", @s.read('/f')
   end
 
-  def test_anchored_batch_chains_its_changes
+  def test_batch_at_the_head_appends_in_order
     @s.create_file('/f', content: "abc\n")
     base = head(@s, '/f')
-    ProjectFs.write_batch!(@s, '/f', [ins(0, 3, 'd'), ins(0, 4, 'e')], base_revision_id: base)
+    r = ProjectFs.write_batch!(@s, '/f', [ins(0, 3, 'd'), ins(0, 4, 'e')], base_revision_id: base)
+    assert_equal :append, r.mode
     assert_equal "abcde\n", @s.read('/f')
+    assert_equal base, r.revisions.first.parent_id
+    assert_equal r.revisions.first.id, r.revisions.last.parent_id
+    assert_equal ['main'], @s.find('/f').branches.pluck(:name)
   end
 
-  def test_anchored_single_change_is_transformed_past_a_concurrent_write
-    @s.create_file('/f', content: "abc\n")
+  # A stale batch is auto-branched at its base, applied there one delta at a
+  # time, and merged into main.
+  def test_stale_batch_auto_branches_and_merges
+    @s.create_file('/f', content: "one\ntwo\n")
     base = head(@s, '/f')
-    @s.write('/f', ins(0, 0, 'X'))
-    ProjectFs.write_batch!(@s, '/f', [ins(0, 3, '!')], base_revision_id: base)
-    assert_equal "Xabc!\n", @s.read('/f')
+    @s.write('/f', ins(0, 0, 'X'))                                  # someone else, on main
+    old_main = head(@s, '/f')
+    r = ProjectFs.write_batch!(@s, '/f', [ins(1, 3, '!'), ins(1, 4, '?')], base_revision_id: base, user_id: 9)
+    assert_equal :merged, r.mode
+    assert_equal "Xone\ntwo!?\n", @s.read('/f')
+    assert r.branch.start_with?('auto/9/')
+    assert_equal base, r.revisions.first.parent_id, 'first batch delta sits on the base, untransformed'
+    assert_equal r.revisions.first.id, r.revisions.last.parent_id
+    merge = r.merge_revision
+    assert_equal old_main, merge.parent_id
+    assert_equal r.branch_head, merge.second_parent_id
+    assert_equal merge.id, head(@s, '/f')
+
+    node = @s.find('/f')
+    ack = ProjectFs.batch_ack('/f', r, node)
+    assert_equal 'merged', ack[:mode]
+    assert_equal "Xone\ntwo!?\n", apply_specs("one\ntwo!?\n", ack[:changes]), 'author: branch head -> merged'
+    cmd, frame = ProjectFs.batch_peer_frames('/f', r, node, user_id: 9).first
+    assert_equal 'patch', cmd
+    assert_equal old_main, frame[:parent]
+    assert_equal "Xone\ntwo!?\n", apply_specs("Xone\ntwo\n", frame[:changes]), 'peers: old main -> merged'
+
+    # The author keeps typing from its own branch head: that base is reachable
+    # through the merge commit, so it merges again cleanly.
+    @s.write('/f', ins(0, 0, 'Y'))
+    r2 = ProjectFs.write_batch!(@s, '/f', [ins(1, 5, '#')], base_revision_id: r.branch_head, user_id: 9)
+    assert_equal :merged, r2.mode
+    assert_equal "YXone\ntwo!?#\n", @s.read('/f')
   end
 
-  def test_stale_anchored_batch_is_refused_whole
+  def test_overlapping_stale_batch_raises_and_keeps_the_branch
     @s.create_file('/f', content: "abc\n")
     base = head(@s, '/f')
-    @s.write('/f', ins(0, 0, 'X'))
-    before = Revision.where(file_node_id: @s.find('/f').id).count
-    assert_raises(DbfsV2::ConflictError) do
-      ProjectFs.write_batch!(@s, '/f', [ins(0, 3, 'd'), ins(0, 4, 'e')], base_revision_id: base)
+    @s.write('/f', d('replaceDataSingleLine', { startLine: 0, startChar: 0, endChar: 3, data: 'XYZ' }))
+    main = head(@s, '/f')
+    err = assert_raises(ProjectFs::BranchConflict) do
+      ProjectFs.write_batch!(@s, '/f', [d('replaceDataSingleLine', { startLine: 0, startChar: 1, endChar: 2, data: 'q' })],
+                             base_revision_id: base)
     end
-    assert_equal "Xabc\n", @s.read('/f')
-    assert_equal before, Revision.where(file_node_id: @s.find('/f').id).count
+    assert_equal main, head(@s, '/f'), 'main untouched'
+    assert_equal "aqc\n", @s.read('/f', revision_id: err.branch_head), 'the edit is kept on its branch'
+    assert @s.find('/f').branches.exists?(name: err.branch)
+  end
+
+  def test_unknown_base_is_refused
+    @s.create_file('/f', content: "abc\n")
+    @s.write('/f', ins(0, 0, 'X'))
+    assert_raises(ProjectFs::UnknownBase) do
+      ProjectFs.write_batch!(@s, '/f', [ins(0, 0, 'Y')], base_revision_id: SecureRandom.uuid)
+    end
+  end
+
+  def apply_specs(text, specs)
+    buf = DbfsV2::Buffer.new(text)
+    specs.each { |c| buf.apply(DbfsV2::Delta.parse(c[:change_type], c[:change_data])) }
+    buf.to_s
   end
 
   def test_revision_frames
@@ -77,6 +125,7 @@ class ProjectFsTest < Minitest::Test
     assert_equal 'insertDataSingleLine', frame[:change_type]
     assert_equal({ 'startLine' => 0, 'startChar' => 1, 'data' => 'Z' }, JSON.parse(frame[:change_data]))
     assert_equal rev.id, frame[:revision]
+    assert_equal set.id, frame[:parent]
   end
 
   def test_ensure_helpers_are_idempotent

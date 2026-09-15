@@ -122,8 +122,14 @@ module DbfsV2
     # with auto_merge_content (spurious conflicts on disjoint setContents edits;
     # and it missed insert-inside-replace).
     # Returns [] if clean, else [{ target:, source: }] with the regions involved.
-    def conflicts(file_node, target_head_id, source_head_id)
-      base_id = lowest_common_ancestor(file_node, target_head_id, source_head_id)
+    #
+    # `base_id` (optional) is a merge base the caller already knows — e.g. the
+    # revision a branch was forked from, when that revision is reachable from the
+    # target head. It skips lowest_common_ancestor, whose cost grows with the
+    # square of the shared history. Passing a revision that is not the real
+    # merge base produces a wrong merge; callers must only pass one they know.
+    def conflicts(file_node, target_head_id, source_head_id, base_id: nil)
+      base_id ||= lowest_common_ancestor(file_node, target_head_id, source_head_id)
       base = base_id ? Content.at(file_node, base_id) : ''
       ours   = Transform.diff_prims(base, Content.at(file_node, target_head_id), 'ours')
       theirs = Transform.diff_prims(base, Content.at(file_node, source_head_id), 'theirs')
@@ -150,7 +156,9 @@ module DbfsV2
     #   { merged: true, content:, rev: }            on success
     #   { merged: true, fast_forward: true, head: } on fast-forward
     #   { merged: false, reason:, conflicts: }      on conflict / unmergeable
-    def merge_auto(file_node, target_name:, source_name:, user_id: nil)
+    #
+    # `base_id`: see #conflicts. Used for both the conflict gate and the merge.
+    def merge_auto(file_node, target_name:, source_name:, user_id: nil, base_id: nil)
       target = file_node.branches.find_by!(name: target_name)
       source = file_node.branches.find_by!(name: source_name)
       return { merged: false, reason: 'source has no head' } unless source.head_revision_id
@@ -179,14 +187,14 @@ module DbfsV2
 
       # Shared, diff-based conflict gate — the SAME check auto_merge_content
       # makes, so merge_conflicts? and merge_auto cannot disagree.
-      confs = conflicts(file_node, target.head_revision_id, source.head_revision_id)
+      confs = conflicts(file_node, target.head_revision_id, source.head_revision_id, base_id: base_id)
       return { merged: false, reason: 'conflict', conflicts: confs } unless confs.empty?
 
       # An opaque op (pcre) that cannot be auto-combined surfaces as a
       # ConflictError. ONLY that is reported as a conflict: any other error is a
       # bug and must propagate rather than masquerade as an unresolvable merge.
       begin
-        content = auto_merge_content(file_node, target.head_revision_id, source.head_revision_id)
+        content = auto_merge_content(file_node, target.head_revision_id, source.head_revision_id, base_id: base_id)
       rescue ConflictError => e
         return { merged: false, reason: 'conflict', error: e.message }
       end
@@ -228,8 +236,8 @@ module DbfsV2
     # OT-transform source's prims past target's and apply both. This handles
     # "merge a branch twice": the base is the previous source head, so its
     # already-merged edits are not present in either diff and are not replayed.
-    def auto_merge_content(file_node, target_head_id, source_head_id)
-      base_id = lowest_common_ancestor(file_node, target_head_id, source_head_id)
+    def auto_merge_content(file_node, target_head_id, source_head_id, base_id: nil)
+      base_id ||= lowest_common_ancestor(file_node, target_head_id, source_head_id)
       base_content   = base_id ? Content.at(file_node, base_id) : ''
       ours_content   = Content.at(file_node, target_head_id)
       theirs_content = Content.at(file_node, source_head_id)

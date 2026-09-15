@@ -91,6 +91,44 @@ class MergeAutoTest < Minitest::Test
   end
 end
 
+# A caller-supplied merge base (the fork point) must give the same result as the
+# computed one, and a branch can be forked at a specific revision.
+class MergeKnownBaseTest < Minitest::Test
+  include DbfsV2TestHelpers
+
+  def d(t, p) = DbfsV2::Delta.new(t, p)
+
+  def build
+    s = setup_store
+    s.create_file('/f', content: "a\nb\nc\n")
+    s.write('/f', d('insertDataSingleLine', { startLine: 0, startChar: 1, data: '1' }))
+    fork = s.find('/f').branches.find_by!(name: 'main').head_revision_id
+    s.write('/f', d('insertDataSingleLine', { startLine: 0, startChar: 0, data: 'M' }))
+    s.branch('/f', 'feat', at_revision: fork)
+    assert_equal "a1\nb\nc\n", s.read('/f', branch: 'feat')
+    s.write('/f', d('insertDataSingleLine', { startLine: 2, startChar: 1, data: 'F' }), branch: 'feat')
+    [s, fork]
+  end
+
+  def test_known_base_matches_computed_base
+    s1, _ = build
+    s2, fork = build
+    computed = s1.merge('/f', target: 'main', source: 'feat', auto: true)
+    known    = s2.merge('/f', target: 'main', source: 'feat', auto: true, base_id: fork)
+    assert computed[:merged] && known[:merged]
+    assert_equal computed[:content], known[:content]
+    assert_equal "Ma1\nb\ncF\n", known[:content]
+  end
+
+  def test_branch_at_a_foreign_revision_is_refused
+    s, _ = build
+    other = setup_store
+    other.create_file('/g', content: 'x')
+    foreign = other.find('/g').branches.first.head_revision_id
+    assert_raises(ActiveRecord::RecordNotFound) { s.branch('/f', 'bad', at_revision: foreign) }
+  end
+end
+
 class MergePlantedSetContentsTest < Minitest::Test
   include DbfsV2TestHelpers
   def setup = @s = setup_store

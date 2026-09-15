@@ -171,57 +171,177 @@ module ProjectFs
     node
   end
 
-  # Apply an ordered list of deltas that a client produced one after another
-  # against a single local state, in one transaction. Returns the Revisions as
-  # persisted (OT may have transformed or split them).
-  #
-  # * base_revision_id nil — each delta is a blind append at the branch head
-  #   (DBFS v1 semantics; what today's client sends).
-  # * base_revision_id given — the first delta is anchored to it and each later
-  #   delta to the revision the previous one produced. That chain is only valid
-  #   while nothing has to be transformed: once a delta is transformed past a
-  #   concurrent write, the client's later coordinates no longer name any
-  #   revision in the log, so the whole batch is rolled back with ConflictError
-  #   rather than applied against the wrong state.
-  def write_batch!(store, path, deltas, base_revision_id: nil, user_id: nil)
-    return [] if deltas.empty?
+  # Outcome of write_batch!.
+  #   mode          :blind (no base; each delta appended at the head)
+  #                 :append (base was the head; deltas appended in order)
+  #                 :fast_forward / :merged (base was behind: auto-branched and merged)
+  #   revisions     the batch's own revisions, as persisted
+  #   head          main's head afterwards
+  #   old_head      main's head the batch landed on (a merge commit's first parent)
+  #   merge_revision, merged_content   (:merged)
+  #   branch, branch_head              (:fast_forward / :merged) the auto-branch
+  BatchResult = Struct.new(:mode, :revisions, :head, :old_head, :merge_revision, :merged_content,
+                           :branch, :branch_head, keyword_init: true)
 
-    ActiveRecord::Base.transaction do
-      anchor = base_revision_id
-      out = []
-      deltas.each_with_index do |delta, i|
-        revs = store.write(path, delta, base_revision_id: anchor, user_id: user_id)
-        if anchor
-          transformed = revs.first.parent_id != anchor
-          if transformed && i < deltas.size - 1
-            raise DbfsV2::ConflictError,
-                  "#{path}: change #{i} was transformed past a concurrent write; " \
-                  'the rest of the batch is based on a state that no longer exists — resync'
-          end
-          anchor = revs.last.id
-        end
-        out.concat(revs)
-      end
-      out
+  # An anchored batch whose auto-branch could not be merged into main. Nothing
+  # is lost: the batch's revisions stay on `branch`.
+  class BranchConflict < DbfsV2::ConflictError
+    attr_reader :branch, :branch_head
+
+    def initialize(message, branch:, branch_head:)
+      super(message)
+      @branch = branch
+      @branch_head = branch_head
     end
   end
 
-  # Wire frame for one persisted revision, in the shape DBFS v1 clients consume:
-  # ['set_contents', {content:}] for a setContents revision, else
-  # ['change', {change_type:, change_data:}]. change_data is the JSON string the
-  # client's applyRemoteChange parses. `revision` is now the revision UUID.
+  # A base the client names that isn't in this file's main history.
+  class UnknownBase < DbfsV2::ConflictError; end
+
+  AUTO_BRANCH_PREFIX = 'auto/'
+  MERGE_ATTEMPTS = 5
+
+  # Apply an ordered list of deltas that a client (or agent) produced one after
+  # another against a single local state. Returns a BatchResult.
+  #
+  # * base_revision_id nil: each delta is a blind append at main's head
+  #   (DBFS v1 semantics; REST and older clients).
+  # * base_revision_id == main's head: appended in order, each anchored to the
+  #   revision the previous one produced. If main moves before the batch lands,
+  #   this falls through to the auto-branch path below.
+  # * base_revision_id behind main's head: auto-branch. A branch
+  #   ("auto/<user>/<stamp>") is forked at the base, the deltas are appended to
+  #   it one at a time — nothing else writes there, so none of them is
+  #   transformed — and the branch is auto-merged into main with the base as
+  #   the merge base (a three-way OT merge; decisions #11). Overlapping edits
+  #   raise BranchConflict, leaving the batch on its branch.
+  #
+  # Auto-branches are never deleted: revisions.branch_id cascades, so dropping
+  # the branch row would drop the revisions a merge commit points at.
+  def write_batch!(store, path, deltas, base_revision_id: nil, user_id: nil)
+    node = store.resolve(path) or raise "no such file: #{path}"
+    main_head = node.branches.find_by!(name: Branch::MAIN).head_revision_id
+    return BatchResult.new(mode: :blind, revisions: [], head: main_head, old_head: main_head) if deltas.empty?
+
+    if base_revision_id.nil?
+      revs = ActiveRecord::Base.transaction { deltas.flat_map { |d| store.write(path, d, user_id: user_id) } }
+      return BatchResult.new(mode: :blind, revisions: revs, head: revs.last.id, old_head: revs.first.parent_id)
+    end
+
+    if base_revision_id == main_head
+      revs = append_anchored(store, path, deltas, base_revision_id, user_id)
+      return BatchResult.new(mode: :append, revisions: revs, head: revs.last.id, old_head: base_revision_id) if revs
+    end
+
+    auto_branch_and_merge!(store, node, path, deltas, base_revision_id, user_id)
+  end
+
+  # The deltas chained from `anchor` on main, in one transaction. nil (and
+  # nothing committed) if main moved first and a delta had to be transformed.
+  def append_anchored(store, path, deltas, anchor, user_id)
+    moved = Class.new(StandardError)
+    ActiveRecord::Base.transaction do
+      deltas.flat_map do |delta|
+        revs = store.write(path, delta, base_revision_id: anchor, user_id: user_id)
+        raise moved if revs.first.parent_id != anchor
+
+        anchor = revs.last.id
+        revs
+      end
+    end
+  rescue moved
+    nil
+  end
+
+  def auto_branch_and_merge!(store, node, path, deltas, base, user_id)
+    index = DbfsV2::Chain.revision_index(node)
+    main_head = node.branches.find_by!(name: Branch::MAIN).head_revision_id
+    unless index.key?(base) && DbfsV2::Chain.reachable_ids(main_head, index).include?(base)
+      raise UnknownBase, "#{path}: base revision #{base} is not in this file's history; resync"
+    end
+
+    name = "#{AUTO_BRANCH_PREFIX}#{user_id || 'system'}/#{Time.now.utc.strftime('%Y%m%dT%H%M%S%L')}-#{SecureRandom.hex(3)}"
+    store.branch(path, name, at_revision: base)
+    revs = ActiveRecord::Base.transaction do
+      deltas.flat_map { |d| store.write(path, d, branch: name, user_id: user_id) }
+    end
+    branch_head = revs.last.id
+
+    MERGE_ATTEMPTS.times do
+      res = store.merge(path, target: Branch::MAIN, source: name, auto: true, user_id: user_id, base_id: base)
+      if res[:merged] && res[:fast_forward]
+        return BatchResult.new(mode: :fast_forward, revisions: revs, head: res[:head], old_head: base,
+                               branch: name, branch_head: branch_head)
+      elsif res[:merged]
+        return BatchResult.new(mode: :merged, revisions: revs, head: res[:rev].id, old_head: res[:rev].parent_id,
+                               merge_revision: res[:rev], merged_content: res[:content],
+                               branch: name, branch_head: branch_head)
+      elsif res[:reason].to_s.include?('advanced concurrently')
+        next
+      else
+        raise BranchConflict.new("#{path}: #{res[:reason] || res[:error]}; your edits are on branch #{name}",
+                                 branch: name, branch_head: branch_head)
+      end
+    end
+    raise BranchConflict.new("#{path}: main kept moving while merging; your edits are on branch #{name}",
+                             branch: name, branch_head: branch_head)
+  end
+
+  # Wire frame for one persisted revision: ['set_contents', {content:}] for a
+  # setContents revision, else ['change', {change_type:, change_data:}].
+  # change_data is the JSON string the client's applyRemoteChange parses.
+  # `revision` is the revision UUID; `parent` the revision it applies on top of,
+  # so a client can tell whether a frame follows the state it holds.
   def revision_frame(path, rev, user_id:)
     if rev.change_type == 'setContents'
-      ['set_contents', { path: path, content: rev.payload['data'].to_s, revision: rev.id, user_id: user_id }]
+      ['set_contents', { path: path, content: rev.payload['data'].to_s, revision: rev.id,
+                         parent: rev.parent_id, user_id: user_id }]
     else
       p = rev.payload
       ['change', {
         path: path, change_type: rev.change_type, change_data: rev.change_data,
         start_line: p['startLine'], start_char: p['startChar'],
         end_line: p['endLine'], end_char: p['endChar'],
-        revision: rev.id, user_id: user_id
+        revision: rev.id, parent: rev.parent_id, user_id: user_id
       }]
     end
+  end
+
+  # The edits that turn `from` into `to`, as change specs a client applies in
+  # order (right to left, so each one's coordinates are valid when it runs).
+  def diff_changes(from, to)
+    prims = DbfsV2::Transform.diff_prims(from.to_s, to.to_s, 'patch')
+    DbfsV2::Transform.deltas_for(prims, DbfsV2::Buffer.new(from.to_s)).map do |d|
+      { change_type: d[:type], change_data: d.reject { |k, _| k == :type }.to_json }
+    end
+  end
+
+  # What the batch's author is told (fs/written).
+  def batch_ack(path, result, node)
+    ack = { path: path, mode: result.mode.to_s, revisions: result.revisions.map(&:id), head: result.head }
+    if result.branch
+      ack[:branch] = result.branch
+      ack[:branch_head] = result.branch_head
+    end
+    if result.mode == :merged
+      # The author's editor holds the branch head (base + its own batch); send
+      # the edits from there to the merged head, plus the head itself.
+      ack[:changes] = diff_changes(DbfsV2::Content.at(node, result.branch_head), result.merged_content)
+      ack[:content] = result.merged_content
+    end
+    ack
+  end
+
+  # What everyone else with the file open is sent: one frame per revision when
+  # the batch landed directly on main (blind, append, fast-forward), or a single
+  # 'patch' frame — the edits from main's previous head to the merge commit —
+  # when it was merged.
+  def batch_peer_frames(path, result, node, user_id:)
+    return result.revisions.map { |r| revision_frame(path, r, user_id: user_id) } unless result.mode == :merged
+
+    from = result.old_head ? DbfsV2::Content.at(node, result.old_head) : ''
+    [['patch', { path: path, changes: diff_changes(from, result.merged_content),
+                 revision: result.head, parent: result.old_head, user_id: user_id }]]
   end
 
   # Text content at an exact revision: from the live cache when it is at that
