@@ -56,6 +56,23 @@ class PcreTest < Minitest::Test
     assert_equal "foo\nbar", buf.to_s
   end
 
+  # A pattern that can match empty at the end of the text used to loop forever
+  # with limit 0 (Regexp#match(str, len + 1) still matches at len). Replacing
+  # must terminate and agree with String#gsub.
+  def test_zero_width_matches_terminate_and_match_gsub
+    require 'timeout'
+    ['', 'x*', '$', '^', 'a*', '\\b', '(?=b)'].each do |pat|
+      ["ab", "aab\nb", ''].each do |text|
+        %w[pcreReplaceSingleLine pcreReplaceMultiLine].each do |type|
+          buf = b(text)
+          Timeout.timeout(2) { d(type, { pattern: pat, replacement: '-' }).apply_to(buf) }
+          re = Regexp.new(pat, type == 'pcreReplaceMultiLine' ? Regexp::MULTILINE : 0)
+          assert_equal text.gsub(re, '-'), buf.to_s, "#{type} #{pat.inspect} on #{text.inspect}"
+        end
+      end
+    end
+  end
+
   def test_store_persists_pcre_revision
     s = DbfsV2::Store.new(new_project_id)
     s.create_file('/f', content: 'foo foo')

@@ -104,7 +104,9 @@ module DbfsV2
       out = []
       pos = 0
       n   = 0
-      while (m = re.match(content, pos))
+      # pos can pass the end after a zero-width match there; Regexp#match(str,
+      # len + 1) still matches at len, so stop explicitly or this never ends.
+      while pos <= content.length && (m = re.match(content, pos))
         b   = m.begin(0)
         e   = m.end(0)
         pos = e > b ? e : e + 1          # advance past zero-width matches
