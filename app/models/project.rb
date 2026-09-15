@@ -3,7 +3,9 @@ class Project < ActiveRecord::Base
   has_many :users, through: :project_memberships
   has_many :chat_channels, dependent: :destroy
   has_many :chat_messages, through: :chat_channels
-  has_many :directory_entries, dependent: :destroy
+  # DBFS v2 nodes. No dependent: option — the file_nodes foreign key cascades
+  # in the database, and application code never destroys a node (tombstones).
+  has_many :file_nodes
   has_many :browser_sessions,  dependent: :destroy
   has_one  :project_setting,   dependent: :destroy
 
