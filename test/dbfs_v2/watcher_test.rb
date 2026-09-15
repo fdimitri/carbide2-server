@@ -168,4 +168,25 @@ class WatcherTest < Minitest::Test
     assert w.overflowed?, 'IN_Q_OVERFLOW marks the tree dirty for reconcile'
   end
 
+
+  # The consumer decides who "the filesystem" is: a watcher built with a user_id
+  # attributes everything it creates to it (carbide2 passes the system user).
+  def test_user_id_attributes_created_nodes_and_revisions
+    w = DbfsV2::Watcher.new(@s, @root, user_id: 777)
+    File.write(File.join(@root, 'attr.txt'), 'one')
+    w.send(:handle, Ev.new(File.join(@root, 'attr.txt'), [:close_write]))
+    File.write(File.join(@root, 'attr.txt'), 'two')
+    w.send(:handle, Ev.new(File.join(@root, 'attr.txt'), [:close_write]))
+    File.binwrite(File.join(@root, 'attr.bin'), "\x00\x01".b)
+    w.send(:handle, Ev.new(File.join(@root, 'attr.bin'), [:close_write]))
+
+    %w[/attr.txt /attr.bin].each do |p|
+      node = @s.find(p)
+      assert_equal 777, node.created_by, p
+      users = Revision.where(file_node_id: node.id).pluck(:user_id)
+      refute_empty users
+      assert_equal [777], users.uniq, p
+    end
+  end
+
 end

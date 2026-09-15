@@ -37,7 +37,7 @@ module DbfsV2
 
     def create_folder(path, owner: nil, group: nil, mode: 0o755, user_id: nil)
       p = normalize(path)
-      return ensure_root! if p == '/'
+      return ensure_root!(user_id: user_id) if p == '/'
       recreate_or_new(p, ftype: 'folder', owner: owner, group: group, mode: mode, user_id: user_id)
     end
 
@@ -59,7 +59,7 @@ module DbfsV2
         posix_mode: 0o777,
         symlink_target: normalize(target),
         created_by: user_id,
-        parent_id: ensure_dir!(File.dirname(p)).id
+        parent_id: ensure_dir!(File.dirname(p), user_id: user_id).id
       )
     end
 
@@ -149,7 +149,7 @@ module DbfsV2
       # Refuse to clobber an existing destination. Checked INSIDE the
       # transaction so a concurrent create at to_path between the check and the
       # rewrite cannot slip through (TOCTOU).
-      new_parent = ensure_dir!(File.dirname(to_path))
+      new_parent = ensure_dir!(File.dirname(to_path), user_id: user_id)
 
       FileNode.transaction do
         collision = FileNode.where(project_id: @project_id, path: to_path).where.not(id: node.id).first
@@ -397,8 +397,12 @@ module DbfsV2
 
     # The '/' folder node, created on first use. Tolerates a concurrent-create
     # race (falls back to the winner's row instead of raising RecordNotUnique).
-    def ensure_root!
+    #
+    # `user_id` (like ensure_dir!'s) only attributes a folder this call actually
+    # creates; an existing folder keeps its created_by.
+    def ensure_root!(user_id: nil)
       FileNode.find_or_create_by!(project_id: @project_id, path: '/') do |n|
+        n.created_by = user_id
         n.ftype = 'folder'
         n.owner = default_owner
         n.posix_mode = 0o755
@@ -413,14 +417,14 @@ module DbfsV2
     # `path` (the root for '/'). Each segment is find-or-create with a
     # RecordNotUnique fallback, so two concurrent creators of the same
     # directory do not lose to a raw unique-index violation.
-    def ensure_dir!(path)
+    def ensure_dir!(path, user_id: nil)
       path = normalize(path)
-      return ensure_root! if path == '/'
-      cur = ensure_root!
+      return ensure_root!(user_id: user_id) if path == '/'
+      cur = ensure_root!(user_id: user_id)
       current_path = ''
       path.split('/').reject(&:empty?).each do |part|
         current_path = "#{current_path}/#{part}"
-        cur = find_or_create_dir!(current_path, part, cur.id)
+        cur = find_or_create_dir!(current_path, part, cur.id, user_id: user_id)
       end
       cur
     end
@@ -428,7 +432,7 @@ module DbfsV2
     # Find-or-create a single directory segment, tolerating a concurrent create
     # (the loser re-reads the winner's row). Refuses to use a non-folder as a
     # parent, so a file cannot contain a child path.
-    def find_or_create_dir!(current_path, part, parent_id)
+    def find_or_create_dir!(current_path, part, parent_id, user_id: nil)
       existing = find_any(current_path)
       if existing
         # A tombstoned parent on the way to a create is resurrected, so a path
@@ -443,7 +447,8 @@ module DbfsV2
 
       FileNode.create!(
         project_id: @project_id, path: current_path, ftype: 'folder',
-        owner: default_owner, posix_mode: 0o755, cur_name: part, parent_id: parent_id
+        owner: default_owner, posix_mode: 0o755, cur_name: part, parent_id: parent_id,
+        created_by: user_id
       )
     rescue ActiveRecord::RecordNotUnique
       find(current_path)
@@ -485,7 +490,7 @@ module DbfsV2
           owner: owner || existing.owner || default_owner,
           posix_group: group, posix_mode: mode, binary: binary,
           created_by: existing.created_by || user_id,
-          parent_id: ensure_dir!(File.dirname(path)).id,
+          parent_id: ensure_dir!(File.dirname(path), user_id: user_id).id,
           mtime: Time.current, updated_at: Time.current
         )
         return existing.reload
@@ -494,7 +499,7 @@ module DbfsV2
         project_id: @project_id, path: path, ftype: ftype,
         owner: owner || default_owner, posix_group: group, posix_mode: mode,
         created_by: user_id, binary: binary,
-        parent_id: ensure_dir!(File.dirname(path)).id
+        parent_id: ensure_dir!(File.dirname(path), user_id: user_id).id
       )
     end
 

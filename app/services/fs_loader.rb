@@ -20,6 +20,9 @@
 # - Over ProjectFs::MAX_FILE_SIZE: tracked as a metadata-only binary node.
 # - POSIX metadata (mode, owner, group, size, mtime) is copied from disk onto
 #   every node it touches.
+# - Every revision and node it creates is attributed to the system user
+#   (User::SYSTEM_UUID): an import from the working tree is a system write,
+#   whoever triggered it (startup, a reconcile sweep, import_git, POST fs/import).
 #
 # Skips IGNORED_PATTERNS at the root and PRUNE_DIR_NAMES at any depth.
 class FsLoader
@@ -40,10 +43,10 @@ class FsLoader
   # mirrors this set so the two can't drift.
   PRUNE_DIR_NAMES = %w[.git node_modules .bundle].freeze
 
-  def initialize(project_id:, root_path:, user_id: nil, verbose: true)
+  def initialize(project_id:, root_path:, verbose: true)
     @project_id = project_id
     @root_path  = File.expand_path(root_path)
-    @user_id    = user_id || User.system.id
+    @user_id    = User.system.id
     @verbose    = verbose
     @store      = ProjectFs.store(project_id)
     @stats      = { dirs: 0, files: 0, skipped: 0, existing: 0 }
@@ -53,7 +56,7 @@ class FsLoader
     raise "Directory not found: #{@root_path}" unless Dir.exist?(@root_path)
 
     log "Importing #{@root_path} into project #{@project_id}"
-    ProjectFs.record_disk_stat!(@store.create_folder('/'), @root_path)
+    ProjectFs.record_disk_stat!(@store.create_folder('/', user_id: @user_id), @root_path)
     walk(@root_path, '/')
 
     log "Done — #{@stats[:dirs]} dirs, #{@stats[:files]} files imported, " \

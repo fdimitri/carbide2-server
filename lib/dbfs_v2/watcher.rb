@@ -19,8 +19,11 @@ module DbfsV2
     # Bounded rerun on discard: a hot file that never quiesces must not spin.
     MAX_INGEST_ATTEMPTS = 3
 
-    def initialize(store, root_path, cache: nil, blob_store: nil, staging_dir: nil)
+    # `user_id` attributes every revision and node this watcher creates (the
+    # consumer decides who "the filesystem" is; nil leaves them unattributed).
+    def initialize(store, root_path, cache: nil, blob_store: nil, staging_dir: nil, user_id: nil)
       @store = store
+      @user_id = user_id
       @root_path = root_path.to_s.chomp('/')
       # Cache/staging default OUTSIDE the watched tree (a cache inside it would be
       # re-ingested by this very watcher).
@@ -100,7 +103,7 @@ module DbfsV2
       srcpath = "/#{srcpath}" unless srcpath.start_with?('/')
 
       if event.flags.include?(:delete) || event.flags.include?(:moved_from)
-        @store.delete(srcpath)
+        @store.delete(srcpath, user_id: @user_id)
         return
       end
 
@@ -142,7 +145,7 @@ module DbfsV2
       # Ensure a binary node exists (resurrect/create/promote on first sight).
       node = @store.find(srcpath)
       if node.nil?
-        @store.create_file(srcpath, binary: true)
+        @store.create_file(srcpath, binary: true, user_id: @user_id)
       else
         target = node.resolve || node
         target.update_columns(binary: true, updated_at: Time.current) unless target.binary?
@@ -153,7 +156,7 @@ module DbfsV2
         res = DbfsV2::Ingest.call(
           store: @store, path: srcpath, source_path: abs,
           staging_dir: @staging_dir, cache: @cache, blob_store: @blob_store,
-          guard: guard_factory.call(abs)
+          guard: guard_factory.call(abs), user_id: @user_id
         )
         break unless res[:status] == :discarded  # the newer state is on disk now
       end
@@ -177,7 +180,7 @@ module DbfsV2
 
       if node.nil?
         content = File.read(abs, encoding: 'UTF-8', invalid: :replace, undef: :replace, replace: '')
-        created = @store.create_file(srcpath, content: content)
+        created = @store.create_file(srcpath, content: content, user_id: @user_id)
         return { status: :created, node: created, revisions: [] }
       end
 
@@ -191,7 +194,7 @@ module DbfsV2
       return { status: :noop, node: target, revisions: [] } if content == current
 
       revs = @store.write(target.path, Delta.new('setContents', { data: content }),
-                          base_revision_id: base_revision_id, user_id: nil)
+                          base_revision_id: base_revision_id, user_id: @user_id)
       { status: :changed, node: target, revisions: revs }
     end
 

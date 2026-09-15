@@ -112,4 +112,17 @@ class BranchAndMergeCoherenceTest < Minitest::Test
     @s.write('/f.txt', DbfsV2::Delta.new('insertDataSingleLine', { startLine: 1, startChar: 1, data: 'y' }))
     assert_equal "base\nxy", @s.read('/f.txt')
   end
+
+  # Folders a create makes implicitly (root, mkdir -p parents) are attributed to
+  # the creating user; folders that already existed keep their created_by.
+  def test_implicit_parents_carry_the_creating_user
+    @s.create_folder('/', user_id: 1)
+    @s.create_file('/a/b/c.txt', content: 'x', user_id: 5)
+    @s.create_file('/a/d.txt', content: 'y', user_id: 6)
+    assert_equal 1, @s.find('/').created_by
+    assert_equal 5, @s.find('/a').created_by
+    assert_equal 5, @s.find('/a/b').created_by
+    assert_equal 6, @s.find('/a/d.txt').created_by
+  end
+
 end

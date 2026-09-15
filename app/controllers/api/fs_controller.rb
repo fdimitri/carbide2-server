@@ -196,7 +196,7 @@ class Api::FsController < Api::BaseController
       return render json: { error: "directory not found: #{root}" }, status: :unprocessable_entity
     end
 
-    stats = FsLoader.new(project_id: @project.id, root_path: root, user_id: current_user.id, verbose: false).load!
+    stats = FsLoader.new(project_id: @project.id, root_path: root, verbose: false).load!
     render json: { root_path: root, **stats }
   end
 
