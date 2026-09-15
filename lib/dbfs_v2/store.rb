@@ -224,7 +224,17 @@ module DbfsV2
         # coordinate that is only valid in a newer head pass validation, then be
         # applied against the older base (silently misplaced). `base` is nil only
         # for a blind append to an empty file, validated against empty.
-        base_buf = base ? Buffer.new(Content.at(node, base)) : Buffer.new('')
+        #
+        # When the live cache is at exactly `base` (the normal keystroke case:
+        # the editor read the file, and every write since advanced the cache),
+        # its content IS Content.at(node, base) — cache_integrity_test pins that
+        # equivalence — so use it instead of reloading and replaying the log.
+        base_buf =
+          if base.nil?
+            Buffer.new('')
+          else
+            Buffer.new(DocumentCache.content_at(node.id, b.name, base) || Content.at(node, base))
+          end
         delta.validate_against!(base_buf)
       end
 

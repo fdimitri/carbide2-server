@@ -46,13 +46,18 @@ module DbfsV2
         return ''
       end
 
+      # Cache hit first, BEFORE loading the revision index: a hit must be O(1),
+      # not O(history). Safe for binary heads — entries are only ever created
+      # for a text head and only advanced by text deltas, and a writeBinary
+      # commit moves the head without advancing the cache, so a binary head can
+      # never match a cached head_id.
+      cached = DocumentCache.content_at(file_node.id, branch.name, head_id)
+      return cached if cached
+
       revs = Chain.revision_index(file_node)
       head_rev = revs[head_id]
       # Binary head -> content-addressed lookup (no text cache).
       return at(file_node, head_id) if head_rev && head_rev.change_type == 'writeBinary'
-
-      entry = DocumentCache.get(file_node.id, branch.name)
-      return entry.buffer.to_s if entry && entry.head_id == head_id
 
       buffer = Buffer.new(at(file_node, head_id))
       DocumentCache.put(file_node.id, branch.name, buffer, head_id, 0)

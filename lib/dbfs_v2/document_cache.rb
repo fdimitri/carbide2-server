@@ -28,6 +28,17 @@ module DbfsV2
         @lock.synchronize { @entries[key(node_id, branch)] }
       end
 
+      # A copy of the cached content, taken under the lock, but only when the
+      # cache is at exactly `head_id`; otherwise nil. Lets hot paths skip a
+      # replay without racing a concurrent #advance on the same buffer.
+      def content_at(node_id, branch, head_id)
+        return nil if head_id.nil?
+        @lock.synchronize do
+          e = @entries[key(node_id, branch)]
+          e && e.head_id == head_id ? e.buffer.to_s.dup : nil
+        end
+      end
+
       def put(node_id, branch, buffer, head_id, revs_since_kf)
         @lock.synchronize do
           @entries[key(node_id, branch)] = Entry.new(buffer, head_id, revs_since_kf, buffer.to_s.bytesize)
