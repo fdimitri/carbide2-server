@@ -230,6 +230,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_15_000000) do
 
   create_table "revisions", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.uuid "branch_id", null: false
+    t.text "bridge"
     t.text "change_data"
     t.string "change_type", null: false
     t.uuid "file_node_id", null: false

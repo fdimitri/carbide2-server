@@ -67,6 +67,7 @@ class ReplaceDbfsV1WithDbfsV2 < ActiveRecord::Migration[8.1]
       t.text     :change_data                                # JSON payload
       t.bigint   :user_id                                    # users.id; nil for system/external writes
       t.string   :priority                                   # OT tie-break
+      t.text     :bridge                                     # JSON deltas: second parent's content -> this revision's (DbfsV2::Rebase)
       t.datetime :timestamp, null: false
     end
     add_index :revisions, :parent_id

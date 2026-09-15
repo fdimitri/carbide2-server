@@ -317,12 +317,11 @@ module DbfsV2
     # `expected_head` pins the target head the caller resolved against; if the
     # target advanced since, a user-resolved merge is refused rather than
     # recording a commit whose parent silently skipped the concurrent write.
-    #   base_id:              -> (auto) a known merge base; see Merge#conflicts
-    def merge(path, target:, source:, resolved: nil, user_id: nil, auto: false, expected_head: nil, base_id: nil)
+    def merge(path, target:, source:, resolved: nil, user_id: nil, auto: false, expected_head: nil)
       node = resolve(path) || find(path)
       raise "no such file: #{path}" unless node
       if auto
-        Merge.merge_auto(node, target_name: target, source_name: source, user_id: user_id, base_id: base_id)
+        Merge.merge_auto(node, target_name: target, source_name: source, user_id: user_id)
       elsif resolved.nil?
         Merge.fast_forward!(node, target_name: target, source_name: source, user_id: user_id)
       else

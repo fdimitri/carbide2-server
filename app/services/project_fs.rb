@@ -172,19 +172,21 @@ module ProjectFs
   end
 
   # Outcome of write_batch!.
-  #   mode          :blind (no base; each delta appended at the head)
+  #   mode          :blind  (no base; each delta appended at the head)
   #                 :append (base was the head; deltas appended in order)
-  #                 :fast_forward / :merged (base was behind: auto-branched and merged)
-  #   revisions     the batch's own revisions, as persisted
+  #                 :rebased (base was behind: auto-branched, then rebased onto main)
+  #   revisions     what landed on main, as persisted, in order
   #   head          main's head afterwards
-  #   old_head      main's head the batch landed on (a merge commit's first parent)
-  #   merge_revision, merged_content   (:merged)
-  #   branch, branch_head              (:fast_forward / :merged) the auto-branch
-  BatchResult = Struct.new(:mode, :revisions, :head, :old_head, :merge_revision, :merged_content,
-                           :branch, :branch_head, keyword_init: true)
+  #   old_head      main's head the batch landed on
+  #   bridge        (:rebased) change hashes taking the author's state — base plus
+  #                 its own batch — to `head`
+  #   branch, branch_head, branch_revisions  (:rebased) the auto-branch and the
+  #                 batch as authored on it
+  BatchResult = Struct.new(:mode, :revisions, :head, :old_head, :bridge,
+                           :branch, :branch_head, :branch_revisions, keyword_init: true)
 
-  # An anchored batch whose auto-branch could not be merged into main. Nothing
-  # is lost: the batch's revisions stay on `branch`.
+  # An anchored batch that could not be rebased onto main. Nothing is lost:
+  # the batch's revisions stay on `branch`.
   class BranchConflict < DbfsV2::ConflictError
     attr_reader :branch, :branch_head
 
@@ -195,11 +197,11 @@ module ProjectFs
     end
   end
 
-  # A base the client names that isn't in this file's main history.
+  # A base the client names that isn't reachable from main's head (neither on
+  # its first-parent chain nor the source of a rebase recorded on it).
   class UnknownBase < DbfsV2::ConflictError; end
 
   AUTO_BRANCH_PREFIX = 'auto/'
-  MERGE_ATTEMPTS = 5
 
   # Apply an ordered list of deltas that a client (or agent) produced one after
   # another against a single local state. Returns a BatchResult.
@@ -210,14 +212,18 @@ module ProjectFs
   #   revision the previous one produced. If main moves before the batch lands,
   #   this falls through to the auto-branch path below.
   # * base_revision_id behind main's head: auto-branch. A branch
-  #   ("auto/<user>/<stamp>") is forked at the base, the deltas are appended to
-  #   it one at a time — nothing else writes there, so none of them is
-  #   transformed — and the branch is auto-merged into main with the base as
-  #   the merge base (a three-way OT merge; decisions #11). Overlapping edits
-  #   raise BranchConflict, leaving the batch on its branch.
+  #   ("auto/<user>/<stamp>") is forked at the base and the deltas are written
+  #   to it one at a time — nothing else writes there, so none is transformed;
+  #   it is the batch exactly as authored. Then the batch is rebased onto main as
+  #   operational transforms, one edit at a time (DbfsV2::Rebase): each edit is
+  #   transformed past what landed on main since the base. Only an edit that
+  #   overlaps a concurrent replace is refused (BranchConflict; the batch stays
+  #   on its branch). The last rebased revision records the branch head as its
+  #   second parent plus the bridge, so the author can keep basing edits on its
+  #   own branch head.
   #
   # Auto-branches are never deleted: revisions.branch_id cascades, so dropping
-  # the branch row would drop the revisions a merge commit points at.
+  # the branch row would drop the batch as authored.
   def write_batch!(store, path, deltas, base_revision_id: nil, user_id: nil)
     node = store.resolve(path) or raise "no such file: #{path}"
     main_head = node.branches.find_by!(name: Branch::MAIN).head_revision_id
@@ -233,7 +239,7 @@ module ProjectFs
       return BatchResult.new(mode: :append, revisions: revs, head: revs.last.id, old_head: base_revision_id) if revs
     end
 
-    auto_branch_and_merge!(store, node, path, deltas, base_revision_id, user_id)
+    auto_branch_and_rebase!(store, node, path, deltas, base_revision_id, user_id)
   end
 
   # The deltas chained from `anchor` on main, in one transaction. nil (and
@@ -253,38 +259,30 @@ module ProjectFs
     nil
   end
 
-  def auto_branch_and_merge!(store, node, path, deltas, base, user_id)
-    index = DbfsV2::Chain.revision_index(node)
+  def auto_branch_and_rebase!(store, node, path, deltas, base, user_id)
     main_head = node.branches.find_by!(name: Branch::MAIN).head_revision_id
-    unless index.key?(base) && DbfsV2::Chain.reachable_ids(main_head, index).include?(base)
+    if DbfsV2::Rebase.concurrent_since(node, base, main_head).nil?
       raise UnknownBase, "#{path}: base revision #{base} is not in this file's history; resync"
     end
 
     name = "#{AUTO_BRANCH_PREFIX}#{user_id || 'system'}/#{Time.now.utc.strftime('%Y%m%dT%H%M%S%L')}-#{SecureRandom.hex(3)}"
     store.branch(path, name, at_revision: base)
-    revs = ActiveRecord::Base.transaction do
+    authored = ActiveRecord::Base.transaction do
       deltas.flat_map { |d| store.write(path, d, branch: name, user_id: user_id) }
     end
-    branch_head = revs.last.id
+    branch_head = authored.last.id
 
-    MERGE_ATTEMPTS.times do
-      res = store.merge(path, target: Branch::MAIN, source: name, auto: true, user_id: user_id, base_id: base)
-      if res[:merged] && res[:fast_forward]
-        return BatchResult.new(mode: :fast_forward, revisions: revs, head: res[:head], old_head: base,
+    begin
+      res = DbfsV2::Rebase.onto!(store, node, deltas.map { |d| DbfsV2::Delta.new(d.type, d.payload) },
+                                 base_id: base, source_head_id: branch_head, user_id: user_id)
+    rescue DbfsV2::ConflictError => e
+      raise BranchConflict.new("#{path}: #{e.message}; your edits are on branch #{name}",
                                branch: name, branch_head: branch_head)
-      elsif res[:merged]
-        return BatchResult.new(mode: :merged, revisions: revs, head: res[:rev].id, old_head: res[:rev].parent_id,
-                               merge_revision: res[:rev], merged_content: res[:content],
-                               branch: name, branch_head: branch_head)
-      elsif res[:reason].to_s.include?('advanced concurrently')
-        next
-      else
-        raise BranchConflict.new("#{path}: #{res[:reason] || res[:error]}; your edits are on branch #{name}",
-                                 branch: name, branch_head: branch_head)
-      end
     end
-    raise BranchConflict.new("#{path}: main kept moving while merging; your edits are on branch #{name}",
-                             branch: name, branch_head: branch_head)
+
+    revs = res[:revisions]
+    BatchResult.new(mode: :rebased, revisions: revs, head: res[:head], old_head: revs.first.parent_id,
+                    bridge: res[:bridge], branch: name, branch_head: branch_head, branch_revisions: authored)
   end
 
   # Wire frame for one persisted revision: ['set_contents', {content:}] for a
@@ -307,41 +305,27 @@ module ProjectFs
     end
   end
 
-  # The edits that turn `from` into `to`, as change specs a client applies in
-  # order (right to left, so each one's coordinates are valid when it runs).
-  def diff_changes(from, to)
-    prims = DbfsV2::Transform.diff_prims(from.to_s, to.to_s, 'patch')
-    DbfsV2::Transform.deltas_for(prims, DbfsV2::Buffer.new(from.to_s)).map do |d|
-      { change_type: d[:type], change_data: d.reject { |k, _| k == :type }.to_json }
-    end
+  def change_specs(delta_hashes)
+    delta_hashes.map { |h| { change_type: h[:type] || h['type'], change_data: h.reject { |k, _| k.to_s == 'type' }.to_json } }
   end
 
   # What the batch's author is told (fs/written).
-  def batch_ack(path, result, node)
+  def batch_ack(path, result, _node = nil)
     ack = { path: path, mode: result.mode.to_s, revisions: result.revisions.map(&:id), head: result.head }
-    if result.branch
+    if result.mode == :rebased
+      # The author's editor holds base + its own batch (= branch_head); `changes`
+      # takes it to `head`.
       ack[:branch] = result.branch
       ack[:branch_head] = result.branch_head
-    end
-    if result.mode == :merged
-      # The author's editor holds the branch head (base + its own batch); send
-      # the edits from there to the merged head, plus the head itself.
-      ack[:changes] = diff_changes(DbfsV2::Content.at(node, result.branch_head), result.merged_content)
-      ack[:content] = result.merged_content
+      ack[:changes] = change_specs(result.bridge)
     end
     ack
   end
 
-  # What everyone else with the file open is sent: one frame per revision when
-  # the batch landed directly on main (blind, append, fast-forward), or a single
-  # 'patch' frame — the edits from main's previous head to the merge commit —
-  # when it was merged.
-  def batch_peer_frames(path, result, node, user_id:)
-    return result.revisions.map { |r| revision_frame(path, r, user_id: user_id) } unless result.mode == :merged
-
-    from = result.old_head ? DbfsV2::Content.at(node, result.old_head) : ''
-    [['patch', { path: path, changes: diff_changes(from, result.merged_content),
-                 revision: result.head, parent: result.old_head, user_id: user_id }]]
+  # What everyone else with the file open is sent: one frame per revision that
+  # landed on main, each chained to the one before by `parent`.
+  def batch_peer_frames(path, result, _node = nil, user_id:)
+    result.revisions.map { |r| revision_frame(path, r, user_id: user_id) }
   end
 
   # Text content at an exact revision: from the live cache when it is at that

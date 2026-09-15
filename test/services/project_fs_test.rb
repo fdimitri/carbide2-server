@@ -50,39 +50,50 @@ class ProjectFsTest < Minitest::Test
     assert_equal ['main'], @s.find('/f').branches.pluck(:name)
   end
 
-  # A stale batch is auto-branched at its base, applied there one delta at a
-  # time, and merged into main.
-  def test_stale_batch_auto_branches_and_merges
+  # A stale batch is auto-branched at its base (as authored), then rebased onto
+  # main one edit at a time.
+  def test_stale_batch_auto_branches_and_rebases
     @s.create_file('/f', content: "one\ntwo\n")
     base = head(@s, '/f')
     @s.write('/f', ins(0, 0, 'X'))                                  # someone else, on main
     old_main = head(@s, '/f')
     r = ProjectFs.write_batch!(@s, '/f', [ins(1, 3, '!'), ins(1, 4, '?')], base_revision_id: base, user_id: 9)
-    assert_equal :merged, r.mode
+    assert_equal :rebased, r.mode
     assert_equal "Xone\ntwo!?\n", @s.read('/f')
     assert r.branch.start_with?('auto/9/')
-    assert_equal base, r.revisions.first.parent_id, 'first batch delta sits on the base, untransformed'
-    assert_equal r.revisions.first.id, r.revisions.last.parent_id
-    merge = r.merge_revision
-    assert_equal old_main, merge.parent_id
-    assert_equal r.branch_head, merge.second_parent_id
-    assert_equal merge.id, head(@s, '/f')
+    assert_equal base, r.branch_revisions.first.parent_id, 'the batch is on its branch exactly as authored'
+    assert_equal "one\ntwo!?\n", @s.read('/f', revision_id: r.branch_head)
+    assert_equal old_main, r.revisions.first.parent_id, 'rebased onto main'
+    assert_equal 2, r.revisions.size, 'one revision per edit'
+    assert_equal r.branch_head, r.revisions.last.second_parent_id
+    assert_equal r.revisions.last.id, head(@s, '/f')
 
-    node = @s.find('/f')
-    ack = ProjectFs.batch_ack('/f', r, node)
-    assert_equal 'merged', ack[:mode]
-    assert_equal "Xone\ntwo!?\n", apply_specs("one\ntwo!?\n", ack[:changes]), 'author: branch head -> merged'
-    cmd, frame = ProjectFs.batch_peer_frames('/f', r, node, user_id: 9).first
-    assert_equal 'patch', cmd
-    assert_equal old_main, frame[:parent]
-    assert_equal "Xone\ntwo!?\n", apply_specs("Xone\ntwo\n", frame[:changes]), 'peers: old main -> merged'
+    ack = ProjectFs.batch_ack('/f', r)
+    assert_equal 'rebased', ack[:mode]
+    assert_equal "Xone\ntwo!?\n", apply_specs("one\ntwo!?\n", ack[:changes]), 'author: its state -> head'
+    frames = ProjectFs.batch_peer_frames('/f', r, user_id: 9)
+    assert_equal old_main, frames.first[1][:parent]
+    view = "Xone\ntwo\n"
+    frames.each { |_cmd, f| view = apply_specs(view, [f]) }
+    assert_equal "Xone\ntwo!?\n", view, 'peers: old main -> head, frame by frame'
 
-    # The author keeps typing from its own branch head: that base is reachable
-    # through the merge commit, so it merges again cleanly.
+    # The author keeps typing from its own state (the branch head): the bridge
+    # recorded on the rebased revision gets it there.
     @s.write('/f', ins(0, 0, 'Y'))
     r2 = ProjectFs.write_batch!(@s, '/f', [ins(1, 5, '#')], base_revision_id: r.branch_head, user_id: 9)
-    assert_equal :merged, r2.mode
+    assert_equal :rebased, r2.mode
     assert_equal "YXone\ntwo!?#\n", @s.read('/f')
+  end
+
+  # Two edits on one line against one concurrent edit between them: a content
+  # merge would conflict; a rebase doesn't.
+  def test_rebase_keeps_separate_edits_on_one_line_separate
+    @s.create_file('/f', content: "abc def ghi\n")
+    base = head(@s, '/f')
+    @s.write('/f', ins(0, 5, 'Z'))
+    r = ProjectFs.write_batch!(@s, '/f', [ins(0, 1, 'X'), ins(0, 11, 'Y')], base_revision_id: base)
+    assert_equal :rebased, r.mode
+    assert_equal "aXbc dZef ghYi\n", @s.read('/f')
   end
 
   def test_overlapping_stale_batch_raises_and_keeps_the_branch
