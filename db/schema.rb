@@ -10,13 +10,15 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_02_000000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_10_000000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
   create_table "agent_conversations", force: :cascade do |t|
     t.bigint "agent_id", null: false
     t.datetime "created_at", null: false
+    t.integer "forked_at_turn"
+    t.bigint "forked_from_id"
     t.datetime "last_activity_at"
     t.bigint "project_id", null: false
     t.string "title"
@@ -25,6 +27,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_000000) do
     t.string "uuid", null: false
     t.string "visibility", default: "project", null: false
     t.index ["agent_id"], name: "index_agent_conversations_on_agent_id"
+    t.index ["forked_from_id"], name: "index_agent_conversations_on_forked_from_id"
     t.index ["project_id", "last_activity_at"], name: "idx_agent_convos_project_recent"
     t.index ["project_id", "user_id", "last_activity_at"], name: "idx_agent_convos_recent"
     t.index ["project_id"], name: "index_agent_conversations_on_project_id"
@@ -34,8 +37,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_000000) do
 
   create_table "agent_messages", force: :cascade do |t|
     t.bigint "agent_conversation_id", null: false
+    t.bigint "agent_turn_id"
     t.text "content"
     t.datetime "created_at", null: false
+    t.datetime "evicted_at"
+    t.integer "expires_at_turn"
     t.string "name"
     t.string "role", null: false
     t.string "tool_call_id"
@@ -43,8 +49,36 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_000000) do
     t.integer "turn", null: false
     t.datetime "updated_at", null: false
     t.bigint "user_id"
+    t.index ["agent_conversation_id", "evicted_at"], name: "idx_agent_messages_evicted"
+    t.index ["agent_conversation_id", "expires_at_turn"], name: "idx_agent_messages_expiry"
     t.index ["agent_conversation_id", "turn"], name: "index_agent_messages_on_agent_conversation_id_and_turn", unique: true
     t.index ["agent_conversation_id"], name: "index_agent_messages_on_agent_conversation_id"
+    t.index ["agent_turn_id"], name: "index_agent_messages_on_agent_turn_id"
+  end
+
+  create_table "agent_turn_usages", force: :cascade do |t|
+    t.bigint "agent_conversation_id", null: false
+    t.bigint "agent_message_id"
+    t.integer "cached_tokens"
+    t.integer "completion_tokens"
+    t.datetime "created_at", null: false
+    t.integer "prompt_tokens"
+    t.integer "total_tokens"
+    t.datetime "updated_at", null: false
+    t.index ["agent_conversation_id", "created_at"], name: "idx_agent_turn_usage_recent"
+    t.index ["agent_conversation_id"], name: "index_agent_turn_usages_on_agent_conversation_id"
+    t.index ["agent_message_id"], name: "index_agent_turn_usages_on_agent_message_id"
+  end
+
+  create_table "agent_turns", force: :cascade do |t|
+    t.bigint "agent_conversation_id", null: false
+    t.datetime "created_at", null: false
+    t.integer "end_turn"
+    t.integer "start_turn", null: false
+    t.string "status", default: "in_progress", null: false
+    t.datetime "updated_at", null: false
+    t.index ["agent_conversation_id", "start_turn"], name: "index_agent_turns_on_agent_conversation_id_and_start_turn", unique: true
+    t.index ["agent_conversation_id"], name: "index_agent_turns_on_agent_conversation_id"
   end
 
   create_table "agents", force: :cascade do |t|
@@ -53,8 +87,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_000000) do
     t.datetime "created_at", null: false
     t.string "description"
     t.boolean "enabled", default: true, null: false
+    t.integer "max_turns"
     t.string "model", null: false
     t.string "name", null: false
+    t.json "peak_hours", default: [], null: false
     t.string "provider_url", null: false
     t.string "role", default: "general", null: false
     t.json "sampling", default: {}, null: false
@@ -62,7 +98,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_000000) do
     t.string "slug", null: false
     t.text "system_prompt", default: "", null: false
     t.datetime "updated_at", null: false
-    t.integer "max_turns"
     t.index ["enabled"], name: "index_agents_on_enabled"
     t.index ["role"], name: "index_agents_on_role"
     t.index ["slug"], name: "index_agents_on_slug", unique: true
@@ -164,6 +199,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_000000) do
     t.string "root_path"
     t.string "shell_image"
     t.datetime "updated_at", null: false
+    t.integer "upload_max_entries"
+    t.integer "upload_max_entry_bytes"
+    t.integer "upload_max_total_bytes"
     t.index ["project_id"], name: "index_project_settings_on_project_id", unique: true
   end
 
@@ -215,28 +253,21 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_000000) do
   create_table "users", force: :cascade do |t|
     t.string "control_uuid"
     t.datetime "created_at", null: false
-    t.datetime "current_sign_in_at"
-    t.string "current_sign_in_ip"
     t.string "email"
-    t.string "encrypted_password", default: "", null: false
-    t.datetime "last_sign_in_at"
-    t.string "last_sign_in_ip"
-    t.string "provider"
-    t.datetime "remember_created_at"
-    t.datetime "reset_password_sent_at"
-    t.string "reset_password_token"
-    t.integer "sign_in_count", default: 0, null: false
-    t.string "uid"
     t.datetime "updated_at", null: false
     t.index ["control_uuid"], name: "index_users_on_control_uuid", unique: true
-    t.index ["reset_password_token"], name: "index_users_on_reset_password_token", unique: true
   end
 
+  add_foreign_key "agent_conversations", "agent_conversations", column: "forked_from_id"
   add_foreign_key "agent_conversations", "agents"
   add_foreign_key "agent_conversations", "projects"
   add_foreign_key "agent_conversations", "users"
   add_foreign_key "agent_messages", "agent_conversations"
+  add_foreign_key "agent_messages", "agent_turns"
   add_foreign_key "agent_messages", "users"
+  add_foreign_key "agent_turn_usages", "agent_conversations"
+  add_foreign_key "agent_turn_usages", "agent_messages"
+  add_foreign_key "agent_turns", "agent_conversations"
   add_foreign_key "browser_sessions", "browser_sessions", column: "forked_from_id"
   add_foreign_key "browser_sessions", "projects"
   add_foreign_key "browser_sessions", "users"
