@@ -35,7 +35,9 @@ class Api::ProjectsController < Api::BaseController
   end
 
   # PATCH /api/projects/:id/set_root
-  # Updates the on-disk root path and optionally wipes the VFS.
+  # Updates the on-disk root path and optionally clears the VFS. Clearing
+  # tombstones every top-level node (DBFS v2 never destroys history); the
+  # nodes are hidden, and re-importing the same paths resurrects them.
   # Redirects to update_settings so root_path lives in project_settings.
   def set_root
     project   = find_project
@@ -46,8 +48,8 @@ class Api::ProjectsController < Api::BaseController
 
     ActiveRecord::Base.transaction do
       if clean_vfs
-        FileChange.where(directory_entry_id: project.directory_entries.select(:id)).delete_all
-        project.directory_entries.delete_all
+        store = ProjectFs.store(project.id)
+        store.list('/').each { |node| store.delete(node.path, user_id: current_user.id) }
       end
       setting = project.project_setting || project.build_project_setting
       setting.update!(root_path: new_path)

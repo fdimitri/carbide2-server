@@ -1,22 +1,27 @@
-# FsLoader — recursively scan a directory on disk and import it into the
-# database-backed virtual filesystem for a given project.
+# FsLoader — walk a project's working tree on disk and bring it into DBFS v2.
 #
 # Usage:
-#   FsLoader.new(project_id: 1, root_path: '/home/user/myproject').load!
+#   FsLoader.new(project_id: 1, root_path: '/srv/projects/<uuid>').load!
 #
-# Behaviour:
-# - Creates the project root ('/') if it does not exist.
-# - For each directory found: creates a 'folder' DirectoryEntry.
-# - For each file found: creates a 'file' DirectoryEntry. Text files also get
-#   an initial 'setContents' FileChange (skipped when the entry already has
-#   FileChanges — DB takes priority over disk). Binary files are tracked as
-#   DBFS entries with `binary: true` and NO FileChange — their bytes live on
-#   disk only and are served via the blob endpoint (see #13 in May30-Questions.md).
-# - Populates POSIX metadata (mode, owner, group, size, mtime) on every entry.
-# - Skips files / directories matching IGNORED_PATTERNS.
-# - Logs progress to stdout.
-require 'etc'
-
+# Run by the worker at startup (before the flusher and watcher start), by the
+# watcher's debounced reconcile sweep (load_dir!), by import_git, and by the
+# fs:load rake task / POST fs/import.
+#
+# Per entry:
+# - Directory: ensure a live folder node (resurrecting a tombstoned one).
+# - Text file with no node, a tombstoned node, or a node with no revisions yet:
+#   create/resurrect it with the disk content as its first setContents.
+# - Text file whose node already has history: DB wins, content is left alone
+#   (the flusher's first sweep writes the DB head back to disk). Same rule as
+#   DBFS v1.
+# - Binary file: ensure a binary node, then run DbfsV2::Ingest (inline, no
+#   read guard — the watcher isn't running yet, or a sweep is re-covering what
+#   inotify missed). Idempotent by digest.
+# - Over ProjectFs::MAX_FILE_SIZE: tracked as a metadata-only binary node.
+# - POSIX metadata (mode, owner, group, size, mtime) is copied from disk onto
+#   every node it touches.
+#
+# Skips IGNORED_PATTERNS at the root and PRUNE_DIR_NAMES at any depth.
 class FsLoader
   IGNORED_PATTERNS = [
     /\A\.git(\/|$)/,
@@ -30,19 +35,17 @@ class FsLoader
     /\.log\z/,
   ].freeze
 
-  # Directories that must never enter the DBFS, at ANY depth (the anchored
-  # IGNORED_PATTERNS above only match at the project root). Pruning these keeps
-  # subtree sweeps from importing a submodule's .git object store or a nested
-  # node_modules tree.
+  # Directories that must never enter DBFS, at ANY depth (the anchored
+  # IGNORED_PATTERNS above only match at the project root). The VfsWatcher
+  # mirrors this set so the two can't drift.
   PRUNE_DIR_NAMES = %w[.git node_modules .bundle].freeze
-
-  MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB — skip very large files
 
   def initialize(project_id:, root_path:, user_id: nil, verbose: true)
     @project_id = project_id
     @root_path  = File.expand_path(root_path)
     @user_id    = user_id || User.system.id
     @verbose    = verbose
+    @store      = ProjectFs.store(project_id)
     @stats      = { dirs: 0, files: 0, skipped: 0, existing: 0 }
   end
 
@@ -50,12 +53,11 @@ class FsLoader
     raise "Directory not found: #{@root_path}" unless Dir.exist?(@root_path)
 
     log "Importing #{@root_path} into project #{@project_id}"
-    DirectoryEntry.ensure_root!(@project_id)
-
+    ProjectFs.record_disk_stat!(@store.create_folder('/'), @root_path)
     walk(@root_path, '/')
 
     log "Done — #{@stats[:dirs]} dirs, #{@stats[:files]} files imported, " \
-        "#{@stats[:existing]} already had changes (skipped content), " \
+        "#{@stats[:existing]} already had history (content skipped), " \
         "#{@stats[:skipped]} skipped."
     @stats
   end
@@ -63,11 +65,8 @@ class FsLoader
   # Import a single subtree — the directory at +disk_subpath+ and everything
   # under it — without re-walking from the project root. The VfsWatcher calls
   # this to sweep a directory whose contents inotify missed because the files
-  # were written before the directory's own recursive watch went live.
-  #
-  # Idempotent and race-safe: existing entries are skipped (or adopted), and a
-  # concurrent insert from the live inotify handler is caught via the unique
-  # (project_id, srcpath) index. Returns the @stats hash.
+  # were written before the directory's own recursive watch went live (#72).
+  # Idempotent and race-safe. Returns the stats hash.
   def load_dir!(disk_subpath)
     disk_subpath = File.expand_path(disk_subpath)
     unless disk_subpath == @root_path || disk_subpath.start_with?(@root_path + '/')
@@ -75,13 +74,8 @@ class FsLoader
     end
     return @stats unless Dir.exist?(disk_subpath)
 
-    DirectoryEntry.ensure_root!(@project_id)
-
     virtual = srcpath_for(disk_subpath)
-    # The directory itself (and any missing ancestors) must exist before we
-    # import its contents, since import_dir/import_file look up the parent row.
-    ensure_dir_chain(virtual) unless virtual == '/'
-
+    import_dir(virtual, disk_subpath)
     log "Sweeping #{disk_subpath} (#{virtual}) into project #{@project_id}"
     walk(disk_subpath, virtual)
     @stats
@@ -89,21 +83,10 @@ class FsLoader
 
   private
 
-  # Absolute disk path -> leading-slash srcpath, relative to @root_path.
   def srcpath_for(disk_path)
     return '/' if disk_path == @root_path
     rel = disk_path[@root_path.length..].to_s
     rel.start_with?('/') ? rel : "/#{rel}"
-  end
-
-  # Idempotently import a folder and every ancestor between the root and it,
-  # top-down, so a deep subtree sweep has its parent chain in place.
-  def ensure_dir_chain(srcpath)
-    cur = ''
-    srcpath.split('/').reject(&:empty?).each do |seg|
-      cur = "#{cur}/#{seg}"
-      import_dir(cur)
-    end
   end
 
   def walk(disk_dir, virtual_prefix)
@@ -122,132 +105,101 @@ class FsLoader
       end
 
       if File.directory?(disk_path)
-        import_dir(rel_path)
-        walk(disk_path, rel_path)
+        import_dir(rel_path, disk_path) && walk(disk_path, rel_path)
       elsif File.file?(disk_path)
         import_file(disk_path, rel_path)
       end
     end
+  rescue Errno::ENOENT, Errno::EACCES => e
+    log "  skip (unreadable dir #{disk_dir}): #{e.class}"
   end
 
-  def import_dir(srcpath)
-    existing = DirectoryEntry.find_by_project_and_path(@project_id, srcpath)
-    if existing
-      existing.refresh_disk_stat!(File.join(@root_path, srcpath.sub(%r{\A/}, '')))
-      return existing
+  def import_dir(srcpath, disk_path)
+    existing = @store.find(srcpath)
+    node = ProjectFs.ensure_folder!(@store, srcpath, user_id: @user_id)
+    unless existing
+      @stats[:dirs] += 1
+      log "  dir:  #{srcpath}"
     end
-
-    parent_path = File.dirname(srcpath)
-    parent      = DirectoryEntry.find_by_project_and_path(@project_id, parent_path)
-    return unless parent  # should not happen if we walk top-down
-
-    entry = DirectoryEntry.create!(
-      project_id:    @project_id,
-      owner_id:      parent.id,
-      created_by_id: @user_id,
-      cur_name:      File.basename(srcpath),
-      srcpath:       srcpath,
-      ftype:         'folder'
-    )
-    entry.refresh_disk_stat!(File.join(@root_path, srcpath.sub(%r{\A/}, '')))
-    @stats[:dirs] += 1
-    log "  dir:  #{srcpath}"
-    entry
-  rescue ActiveRecord::RecordNotUnique, ActiveRecord::RecordInvalid
-    # A concurrent create (e.g. the live inotify handler racing a subtree
-    # sweep) already inserted this row — either we lost the DB unique-index
-    # race (RecordNotUnique) or the app-level uniqueness validation saw the
-    # committed row first (RecordInvalid). Adopt the existing entry either way.
-    DirectoryEntry.find_by_project_and_path(@project_id, srcpath)
+    ProjectFs.record_disk_stat!(node, disk_path)
+    node
+  rescue RuntimeError => e
+    # A file node already sits at this path (e.g. a file was replaced by a
+    # directory on disk). Leave it for the watcher/user; don't abort the walk.
+    log "  skip (#{e.message})"
+    @stats[:skipped] += 1
+    nil
   end
 
   def import_file(disk_path, srcpath)
-    entry = DirectoryEntry.find_by_project_and_path(@project_id, srcpath)
-
-    if entry && (entry.file_changes.any? || entry.binary?)
-      # DB wins for text files that already have history. For binary entries
-      # there is no history but the bytes are authoritative on disk — just
-      # refresh stat and move on.
-      entry.refresh_disk_stat!(disk_path) if entry.binary?
-      @stats[:existing] += 1
-      log "  skip (has changes): #{srcpath}"
-      return entry
-    end
-
     size = File.size(disk_path)
-    if size > MAX_FILE_SIZE
+    if size > ProjectFs::MAX_FILE_SIZE
+      ProjectFs.track_oversized!(@store, srcpath, disk_path, user_id: @user_id)
       @stats[:skipped] += 1
-      log "  skip (too large #{size}): #{srcpath}"
+      log "  skip content (too large #{size}): #{srcpath}"
       return
     end
 
-    parent_path = File.dirname(srcpath)
-    parent      = DirectoryEntry.find_by_project_and_path(@project_id, parent_path)
-    return unless parent
+    if ProjectFs.binary_file?(disk_path)
+      import_binary(disk_path, srcpath)
+    else
+      import_text(disk_path, srcpath)
+    end
+  rescue ActiveRecord::RecordNotUnique
+    # A concurrent create (the live watcher racing a sweep) won; its import
+    # stands.
+    @stats[:existing] += 1
+  end
 
-    raw_head = File.binread(disk_path, [size, 8192].min)
-    is_binary = raw_head.include?("\x00")
+  def import_text(disk_path, srcpath)
+    node = @store.find(srcpath)
+    target = node && (node.resolve || node)
 
-    if is_binary
-      # Track as DBFS entry; bytes stay on disk. Served by the blob endpoint.
-      unless entry
-        entry = DirectoryEntry.create!(
-          project_id:    @project_id,
-          owner_id:      parent.id,
-          created_by_id: @user_id,
-          cur_name:      File.basename(srcpath),
-          srcpath:       srcpath,
-          ftype:         'file',
-          binary:        true,
-          last_size:     size
-        )
-      else
-        entry.update_columns(binary: true, last_size: size, updated_at: Time.current)
-      end
-      entry.refresh_disk_stat!(disk_path)
-      @stats[:files] += 1
-      log "  file: #{srcpath} (#{size} bytes, binary)"
-      return entry
+    if target && !target.binary? && ProjectFs.head_revision_id(target)
+      # DB wins for text with history.
+      @stats[:existing] += 1
+      log "  skip (has history): #{srcpath}"
+      return target
     end
 
     content = File.read(disk_path, mode: 'rb')
-    # Interpret bytes as UTF-8 and only drop sequences that are actually
-    # invalid UTF-8. The previous .encode('UTF-8', ...) call treated the
-    # ASCII-8BIT source as encoding-less and replaced EVERY byte >= 0x80
-    # with '', which silently stripped en-dashes (–), em-dashes (—),
-    # smart quotes, accents, etc. — even from valid UTF-8 source files.
+    # Only drop sequences that are actually invalid (binary_file? already sent
+    # non-UTF-8 content down the binary path, so this is belt and braces).
     content.force_encoding('UTF-8')
     content = content.scrub('') unless content.valid_encoding?
 
-    unless entry
-      entry = DirectoryEntry.create!(
-        project_id:    @project_id,
-        owner_id:      parent.id,
-        created_by_id: @user_id,
-        cur_name:      File.basename(srcpath),
-        srcpath:       srcpath,
-        ftype:         'file'
-      )
+    if target
+      target.update_columns(binary: false, updated_at: Time.current) if target.binary?
+      @store.write(target.path, DbfsV2::Delta.new('setContents', { data: content }), user_id: @user_id) unless content.empty?
+    else
+      # create_file resurrects a tombstoned node at this path (same id, same DAG).
+      target = @store.create_file(srcpath, content: content, user_id: @user_id)
     end
-
-    FileChange.create!(
-      directory_entry_id: entry.id,
-      user_id:            @user_id,
-      change_type:        'setContents',
-      change_data:        content,
-      start_line:         0,
-      start_char:         0,
-      revision:           0,
-      mtime:              File.mtime(disk_path)
-    )
-    entry.refresh_disk_stat!(disk_path)
-
+    ProjectFs.record_disk_stat!(target, disk_path)
     @stats[:files] += 1
-    log "  file: #{srcpath} (#{size} bytes)"
-    entry
-  rescue ActiveRecord::RecordNotUnique, ActiveRecord::RecordInvalid
-    # Concurrent create raced us; adopt the winner (see import_dir).
-    DirectoryEntry.find_by_project_and_path(@project_id, srcpath)
+    log "  file: #{srcpath} (#{content.bytesize} bytes)"
+    target
+  end
+
+  def import_binary(disk_path, srcpath)
+    node = ProjectFs.ensure_file!(@store, srcpath, binary: true, user_id: @user_id)
+    node = node.resolve || node
+    node.update_columns(binary: true, updated_at: Time.current) unless node.binary?
+
+    cache = ProjectFs.blob_cache(@project_id)
+    res = DbfsV2::Ingest.call(
+      store: @store, path: node.path, source_path: disk_path,
+      staging_dir: cache.root, cache: cache, blob_store: DbfsV2.blob_store,
+      user_id: @user_id
+    )
+    ProjectFs.record_disk_stat!(node, disk_path)
+    if res[:status] == :committed
+      @stats[:files] += 1
+      log "  file: #{srcpath} (#{res[:size]} bytes, binary)"
+    else
+      @stats[:existing] += 1
+    end
+    node
   end
 
   def log(msg)

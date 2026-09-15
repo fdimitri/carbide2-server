@@ -19,15 +19,10 @@ if ActiveModel::Type::Boolean.new.cast(ENV['SEED_SAMPLE_FILES'])
     RUBY
     '/docs/notes.txt'   => "scratch notes\n",
   }
+  store = ProjectFs.store(project.id)
   seed_files.each do |path, body|
-    next if DirectoryEntry.exists?(project_id: project.id, srcpath: path)
-    DirectoryEntry.create_file!(
-      project_id: project.id,
-      srcpath: path,
-      user_id: User.system.id,
-      data: body,
-      mkdirp: true
-    )
+    next if store.find_any(path)
+    store.create_file(path, content: body, user_id: User.system.id)
   end
 end
 

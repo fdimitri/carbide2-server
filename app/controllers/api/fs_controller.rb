@@ -1,163 +1,166 @@
-# REST API for the database-backed virtual filesystem.
+# REST API for the DBFS v2 project filesystem.
 # All routes are scoped under /api/projects/:project_id/fs/...
 #
-# GET    /api/projects/:project_id/fs/tree          — full file tree JSON
-# GET    /api/projects/:project_id/fs/content       — file content (calc_current)
-#          ?path=/src/app.rb
-# POST   /api/projects/:project_id/fs/files         — create file
-#          { path:, content: (optional) }
-# POST   /api/projects/:project_id/fs/dirs          — create directory
-#          { path: }
-# PATCH  /api/projects/:project_id/fs/rename        — rename entry
-#          { path:, new_name: }
-# DELETE /api/projects/:project_id/fs/entry         — delete entry
-#          { path: }
-class Api::DirectoryEntriesController < Api::BaseController
+# GET    /fs/tree                 — full file tree JSON (same shape as the worker's fs/tree)
+# GET    /fs/content?path=        — text content at the main head (or ?revision=<uuid>)
+# GET    /fs/stat?path=           — node metadata (size, revisions, posix, symlink)
+# GET    /fs/blob?path=           — raw bytes: the live file on disk (Range-capable),
+#                                   or ?revision=<uuid> for an archived revision
+# GET    /fs/download?path=       — file bytes, or a directory as .tar.gz (from disk)
+# POST   /fs/files                — create file   { path:, content:, mkdirp: }
+# POST   /fs/dirs                 — create folder { path: } (mkdir -p)
+# PATCH  /fs/rename               — rename        { path:, new_name: }
+# DELETE /fs/entry                — delete (tombstone; history is kept) { path: }
+# POST   /fs/upload               — multipart archive/file upload
+# POST   /fs/import               — walk the working tree into DBFS (FsLoader)
+#
+# REST writes are not broadcast to connected editors (same as DBFS v1); the
+# worker's flusher writes them to disk and clients pick them up on refresh.
+class Api::FsController < Api::BaseController
   before_action :load_project
 
   def tree
-    render json: DirectoryEntry.tree_for_project(@project.id)
+    render json: ProjectFs.tree_json(@project.id)
   end
 
   def content
-    entry = find_entry!(params[:path])
-    return unless entry
-    return render json: { error: 'entry is a directory' }, status: :unprocessable_entity if entry.ftype == 'folder'
-    render json: { path: entry.srcpath, content: entry.calc_current }
+    node = find_node!(params[:path])
+    return unless node
+    return render json: { error: 'entry is a directory' }, status: :unprocessable_entity if node.ftype == 'folder'
+
+    if params[:revision].present?
+      content = store.read(node.path, revision_id: params[:revision])
+      return render json: { path: node.path, revision: params[:revision], content: content.to_s }
+    end
+    target = node.resolve
+    return render json: { error: 'dangling symlink' }, status: :unprocessable_entity unless target
+    return render json: { error: 'is binary — use blob' }, status: :unprocessable_entity if target.binary?
+
+    render json: { path: node.path, revision: ProjectFs.head_revision_id(target), content: store.read(node.path) }
+  rescue ActiveRecord::RecordNotFound
+    render json: { error: 'revision not found' }, status: :not_found
   end
 
   def create_file
-    path    = require_param!(:path)
+    path = require_param!(:path)
     return unless path
-    content = params[:content].to_s
-    entry   = DirectoryEntry.create_file!(
-      project_id: @project.id,
-      srcpath:    path,
-      user_id:    current_user.id,
-      data:       content,
-      mkdirp:     params[:mkdirp] == true || params[:mkdirp] == 'true'
-    )
-    render json: entry_json(entry), status: :created
-  rescue ActiveRecord::RecordInvalid => e
-    render json: { error: e.message }, status: :unprocessable_entity
-  rescue ArgumentError, RuntimeError => e
+    mkdirp = params[:mkdirp] == true || params[:mkdirp] == 'true'
+    unless mkdirp || store.find(File.dirname(normalize(path)))
+      return render json: { error: "Parent directory #{File.dirname(normalize(path))} does not exist" },
+                    status: :unprocessable_entity
+    end
+    node = ProjectFs.ensure_file!(store, path, content: params[:content].to_s, user_id: current_user.id)
+    render json: node_json(node), status: :created
+  rescue ArgumentError, RuntimeError, ActiveRecord::RecordInvalid => e
     render json: { error: e.message }, status: :unprocessable_entity
   end
 
   def create_dir
-    path  = require_param!(:path)
+    path = require_param!(:path)
     return unless path
-    entry = DirectoryEntry.mkdir_p!(project_id: @project.id, srcpath: path, user_id: current_user.id)
-    render json: entry_json(entry), status: :created
-  rescue ActiveRecord::RecordInvalid => e
+    node = ProjectFs.ensure_folder!(store, path, user_id: current_user.id)
+    render json: node_json(node), status: :created
+  rescue ArgumentError, RuntimeError, ActiveRecord::RecordInvalid => e
     render json: { error: e.message }, status: :unprocessable_entity
   end
 
   def rename
-    path     = require_param!(:path)
+    path = require_param!(:path)
     return unless path
     new_name = require_param!(:new_name)
     return unless new_name
-    entry    = find_entry!(path)
-    return unless entry
-    entry.rename!(new_name)
-    render json: entry_json(entry)
-  rescue ActiveRecord::RecordInvalid => e
-    render json: { error: e.message }, status: :unprocessable_entity
-  rescue RuntimeError => e
+    node = find_node!(path)
+    return unless node
+    return render json: { error: 'new_name must be a single path segment' }, status: :unprocessable_entity if new_name.include?('/')
+
+    old_path = node.path
+    new_path = File.join(File.dirname(old_path), new_name)
+    moved = store.move(old_path, new_path, user_id: current_user.id)
+    rename_on_disk(old_path, new_path)
+    render json: node_json(moved)
+  rescue ArgumentError, RuntimeError => e
     render json: { error: e.message }, status: :unprocessable_entity
   end
 
   def destroy_entry
-    path  = require_param!(:path)
+    path = require_param!(:path)
     return unless path
-    entry = find_entry!(path)
-    return unless entry
-    entry_path = entry.srcpath
-    entry.destroy!
+    node = find_node!(path)
+    return unless node
+    return render json: { error: 'cannot delete root' }, status: :unprocessable_entity if node.root?
 
-    # Mirror the delete to disk so the on-disk VFS stays in sync with DBFS.
-    # Worker-driven deletes go through FsStore#handle_delete, which uses the
-    # VFS suppress-set. The REST path is rarer (admin tools, scripts) so we
-    # just remove the file/dir; the watcher will see a :delete inotify event
-    # but `handle_event` bails early when the entry no longer exists.
-    # Fixes #12 in May30-Questions.md.
-    setting   = @project.project_setting
-    root_path = setting&.root_path.presence || @project.default_root_path
-    if root_path.present?
-      disk_path = File.join(root_path, entry_path)
-      FileUtils.rm_rf(disk_path) if File.exist?(disk_path)
-    end
-
+    store.delete(node.path, user_id: current_user.id)
+    # Mirror to disk. The worker's watcher sees the :delete, finds the node
+    # already tombstoned, and does nothing.
+    disk = ProjectFs.disk_path(root_path, node.path)
+    FileUtils.rm_rf(disk) if File.exist?(disk) || File.symlink?(disk)
     head :no_content
   rescue => e
-    Rails.logger.warn("destroy_entry disk rm failed: #{e.class}: #{e.message}")
-    head :no_content
+    Rails.logger.warn("destroy_entry failed: #{e.class}: #{e.message}")
+    render json: { error: e.message }, status: :unprocessable_entity
   end
 
   # GET /api/projects/:project_id/fs/stat?path=/some/path
-  # Lightweight entry metadata for the explorer Properties panel (#5).
   def stat
-    entry = find_entry!(params[:path])
-    return unless entry
-    render json: entry.stat_hash
+    return unless find_node!(params[:path])
+    render json: store.stat(params[:path])
   end
 
-  # GET /api/projects/:project_id/fs/blob?path=/img.png
-  # Streams the raw bytes of a binary (or any) entry straight from disk.
-  # Honours Range: bytes=start-end for partial reads (image previews, big
-  # downloads). Returns 404 if the file isn't on disk. See #13.
+  # GET /api/projects/:project_id/fs/blob?path=/img.png[&revision=<uuid>]
+  # Live bytes come from the working tree on disk (the PVC is authoritative for
+  # binaries; honours Range). A ?revision= reads the archived bytes for that
+  # revision from DBFS instead.
   def blob
-    entry = find_entry!(params[:path])
-    return unless entry
-    return render json: { error: 'is a directory' }, status: :unprocessable_entity if entry.ftype == 'folder'
+    node = find_node!(params[:path])
+    return unless node
+    return render json: { error: 'is a directory' }, status: :unprocessable_entity if node.ftype == 'folder'
 
-    setting   = @project.project_setting
-    root_path = setting&.root_path.presence || @project.default_root_path
-    disk_path = File.join(root_path.to_s, entry.srcpath)
-    return render json: { error: 'not on disk' }, status: :not_found unless File.file?(disk_path)
+    if params[:revision].present?
+      bytes = store.read(node.path, revision_id: params[:revision]).to_s.b
+      type  = Marcel::MimeType.for(StringIO.new(bytes), name: node.cur_name) rescue 'application/octet-stream'
+      return send_data bytes, type: type, disposition: 'inline', filename: node.cur_name
+    end
 
-    content_type = Marcel::MimeType.for(Pathname.new(disk_path)) rescue 'application/octet-stream'
-    send_file disk_path,
-              type:        content_type,
-              disposition: 'inline',
-              filename:    entry.cur_name
+    disk = ProjectFs.disk_path(root_path, node.path)
+    return render json: { error: 'not on disk' }, status: :not_found unless File.file?(disk)
+
+    content_type = Marcel::MimeType.for(Pathname.new(disk)) rescue 'application/octet-stream'
+    send_file disk, type: content_type, disposition: 'inline', filename: node.cur_name
+  rescue ActiveRecord::RecordNotFound
+    render json: { error: 'revision not found' }, status: :not_found
   end
 
   # GET /api/projects/:project_id/fs/download?path=/src
-  # Download a file or directory. A file streams its raw bytes (attachment); a
-  # directory (including root '/', i.e. the whole project) is streamed as a
-  # .tar.gz with entries relative to that directory.
+  # A file streams its raw bytes (attachment); a directory (including root '/',
+  # i.e. the whole project) is streamed as a .tar.gz relative to that directory.
+  # Served from the working tree on disk.
   def download
     path = params[:path].to_s.strip
     path = '/' if path.empty?
 
-    setting   = @project.project_setting
-    root_path = (setting&.root_path.presence || @project.default_root_path).to_s.chomp('/')
-    return render json: { error: 'no project directory' }, status: :unprocessable_entity if root_path.empty?
+    disk = ProjectFs.disk_path(root_path, path)
+    return render json: { error: 'not found' }, status: :not_found unless File.exist?(disk)
 
-    disk_path = File.join(root_path, path.sub(%r{\A/}, ''))
-    return render json: { error: 'not found' }, status: :not_found unless File.exist?(disk_path)
-
-    if File.directory?(disk_path)
+    if File.directory?(disk)
       name = path == '/' ? 'project' : File.basename(path)
       archive = Tempfile.new(['carbide-download', '.tar.gz'])
       archive.binmode
-      ProjectArchive.export_to(disk_path, archive)
+      ProjectArchive.export_to(disk, archive)
       archive.flush
       send_file archive.path, type: 'application/gzip', disposition: 'attachment',
                  filename: "#{name}.tar.gz"
     else
-      content_type = Marcel::MimeType.for(Pathname.new(disk_path)) rescue 'application/octet-stream'
-      send_file disk_path, type: content_type, disposition: 'attachment',
-                 filename: File.basename(path)
+      content_type = Marcel::MimeType.for(Pathname.new(disk)) rescue 'application/octet-stream'
+      send_file disk, type: content_type, disposition: 'attachment', filename: File.basename(path)
     end
+  rescue ArgumentError => e
+    render json: { error: e.message }, status: :unprocessable_entity
   end
 
   # POST /api/projects/:project_id/fs/upload
   # multipart/form-data:
-  #   file:        (required) uploaded file; .zip/.tar/.tar.gz/.tgz are extracted, anything else stored as-is
-  #   dest:        (optional) destination directory inside the project tree; defaults to '/'
+  #   file: (required) .zip/.tar/.tar.gz/.tgz are extracted, anything else stored as-is
+  #   dest: (optional) destination directory inside the project tree; defaults to '/'
   def upload
     uploaded = params[:file]
     if uploaded.blank? || !uploaded.respond_to?(:read)
@@ -185,22 +188,16 @@ class Api::DirectoryEntriesController < Api::BaseController
 
   # POST /api/projects/:project_id/fs/import
   # body: { path: '/optional/absolute/host/path' }
-  # When path is omitted, imports from the project's configured root_path.
-  # Wraps FsLoader; existing entries with FileChanges are skipped (DB wins).
+  # When path is omitted, imports from the project's working tree. Text nodes
+  # that already have history are left alone (DB wins).
   def import_from_disk
-    root_path = params[:path].presence || @project.project_setting&.root_path || @project.default_root_path
-    unless Dir.exist?(root_path)
-      return render json: { error: "directory not found: #{root_path}" }, status: :unprocessable_entity
+    root = params[:path].presence || root_path
+    unless Dir.exist?(root)
+      return render json: { error: "directory not found: #{root}" }, status: :unprocessable_entity
     end
 
-    stats = FsLoader.new(
-      project_id: @project.id,
-      root_path:  root_path,
-      user_id:    current_user.id,
-      verbose:    false
-    ).load!
-
-    render json: { root_path: root_path, **stats }
+    stats = FsLoader.new(project_id: @project.id, root_path: root, user_id: current_user.id, verbose: false).load!
+    render json: { root_path: root, **stats }
   end
 
   private
@@ -211,13 +208,42 @@ class Api::DirectoryEntriesController < Api::BaseController
     render json: { error: 'project not found' }, status: :not_found
   end
 
-  def find_entry!(path)
-    entry = DirectoryEntry.find_by_project_and_path(@project.id, path.to_s.strip)
-    unless entry
+  def store
+    @store ||= ProjectFs.store(@project.id)
+  end
+
+  def root_path
+    @root_path ||= ProjectFs.root_path(@project)
+  end
+
+  def normalize(path)
+    p = path.to_s.strip
+    p = "/#{p}" unless p.start_with?('/')
+    p = p.chomp('/')
+    p.empty? ? '/' : p
+  end
+
+  def find_node!(path)
+    node = store.find(path.to_s.strip)
+    unless node
       render json: { error: 'not found' }, status: :not_found
       return nil
     end
-    entry
+    node
+  rescue ArgumentError => e
+    render json: { error: e.message }, status: :unprocessable_entity
+    nil
+  end
+
+  def rename_on_disk(old_path, new_path)
+    from = ProjectFs.disk_path(root_path, old_path)
+    to   = ProjectFs.disk_path(root_path, new_path)
+    return unless File.exist?(from) || File.symlink?(from)
+
+    FileUtils.mkdir_p(File.dirname(to))
+    File.rename(from, to)
+  rescue SystemCallError => e
+    Rails.logger.warn("rename on disk failed #{from} -> #{to}: #{e.class}: #{e.message}")
   end
 
   def require_param!(key)
@@ -229,7 +255,7 @@ class Api::DirectoryEntriesController < Api::BaseController
     val
   end
 
-  def entry_json(entry)
-    { id: entry.id, name: entry.cur_name, path: entry.srcpath, type: entry.ftype }
+  def node_json(node)
+    { id: node.id, name: node.cur_name, path: node.path, type: node.ftype }
   end
 end

@@ -42,8 +42,8 @@ Rails.application.routes.draw do
       resources :chat_channels, only: [:index, :create], controller: 'chat_channels' do
         resources :chat_messages, only: [:index, :create], controller: 'chat_messages'
       end
-      # Database-backed virtual filesystem
-      resources :directory_entries, only: [], path: 'fs', controller: 'directory_entries' do
+      # DBFS v2 — database-backed project filesystem
+      resources :file_nodes, only: [], path: 'fs', controller: 'fs' do
         collection do
           get    'tree',    action: :tree
           get    'content', action: :content
