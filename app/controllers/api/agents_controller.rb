@@ -25,6 +25,7 @@ class Api::AgentsController < Api::BaseController
     agent.slug          = params[:slug].to_s.strip
     agent.allowed_tools = normalized_tools    if params.key?(:allowed_tools)
     agent.sampling      = normalized_sampling if params.key?(:sampling)
+    agent.peak_hours    = normalized_peak_hours if params.key?(:peak_hours)
     agent.api_key       = params[:api_key] if params[:api_key].present?
     agent.save!
     render json: agent_json(agent), status: :created
@@ -38,6 +39,7 @@ class Api::AgentsController < Api::BaseController
     agent.assign_attributes(agent_params)
     agent.allowed_tools = normalized_tools    if params.key?(:allowed_tools)
     agent.sampling      = normalized_sampling if params.key?(:sampling)
+    agent.peak_hours    = normalized_peak_hours if params.key?(:peak_hours)
     # Only overwrite the stored key when a non-blank value is supplied.
     agent.api_key = params[:api_key] if params[:api_key].present?
     agent.save!
@@ -80,6 +82,28 @@ class Api::AgentsController < Api::BaseController
     raw.respond_to?(:to_unsafe_h) ? raw.to_unsafe_h : raw
   end
 
+  # Peak-hours windows, normalized to plain hashes. All times are UTC (see
+  # Agent::AddPeakHours). Tolerates both an array of objects and a
+  # {"0"=>{…}} map, and both string and symbol keys. Validation lives on the
+  # model; this only coerces the transport shape.
+  def normalized_peak_hours
+    raw = params[:peak_hours]
+    return [] if raw.blank?
+    list = raw.is_a?(Hash) ? raw.values : Array(raw)
+    list.filter_map do |w|
+      h = w.respond_to?(:to_unsafe_h) ? w.to_unsafe_h : w
+      next unless h.is_a?(Hash)
+      {
+        'days'  => Array(h['days'] || h[:days]).map { |d| d.to_s.downcase }.reject(&:blank?),
+        'start' => (h['start'] || h[:start]).to_s,
+        'end'   => (h['end'] || h[:end]).to_s,
+        # The zone the times were entered in. Part of the window — dropping it
+        # here would silently reinterpret every window as UTC.
+        'tz'    => (h['tz'] || h[:tz]).to_s.strip,
+      }
+    end
+  end
+
   def agent_json(a)
     {
       id:                 a.id,
@@ -92,6 +116,7 @@ class Api::AgentsController < Api::BaseController
       system_prompt:      a.system_prompt,
       allowed_tools:      a.allowed_tool_slugs,
       sampling:           a.sampling_params,
+      peak_hours:         a.peak_hours_windows,
       role:               a.role,
       enabled:            a.enabled,
       shell_exec_enabled: a.shell_exec_enabled,

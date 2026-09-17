@@ -21,7 +21,15 @@ echo "==> [1/4] bash smoke"
 NAMESPACE="$NAMESPACE" BASE_URL="$BASE_URL" "$ROOT/scripts/smoke-test.sh"
 
 echo "==> [2/4] helm test"
-helm test "$NAMESPACE" -n "$NAMESPACE"
+# The control operator applies workspace manifests directly (kubeclient), NOT via
+# helm, so a control-created workspace has no helm release named $NAMESPACE. Only
+# run the chart's test hook when a release actually exists (e.g. a hand-installed
+# ws-N); otherwise this layer has nothing to test.
+if helm status "$NAMESPACE" -n "$NAMESPACE" >/dev/null 2>&1; then
+  helm test "$NAMESPACE" -n "$NAMESPACE"
+else
+  echo "    (no helm release '${NAMESPACE}' — operator applies manifests directly; skipping)"
+fi
 
 echo "==> [3/4] rails minitest"
 "$ROOT/scripts/test-rails.sh" "$NAMESPACE"
@@ -33,7 +41,7 @@ cd "${CARBIDE2_CLIENT:-$ROOT/../carbide2-client}"
 # Idempotent: find_or_create_by! never raises on re-runs.
 E2E_EMAIL="${CARBIDE_E2E_EMAIL:-e2e@example.com}"
 E2E_PASSWORD="${CARBIDE_E2E_PASSWORD:-password123}"
-kubectl -n "$NAMESPACE" exec deploy/ws-1 -c workspace -- \
+kubectl -n "$NAMESPACE" exec deploy/$NAMESPACE -c workspace -- \
   bundle exec rails runner \
   "User.find_or_create_by!(email: '${E2E_EMAIL}') { |u| u.password = '${E2E_PASSWORD}' }" \
   >/dev/null

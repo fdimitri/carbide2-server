@@ -1,6 +1,6 @@
 # Postgres-only configuration. SQLite is intentionally not supported as a
-# runtime backend. Connection details come from environment variables; the
-# defaults match the docker-compose service names.
+# runtime backend. Connection details come from environment variables set by
+# the control operator on the workspace Deployment.
 default: &default
   adapter: postgresql
   encoding: unicode

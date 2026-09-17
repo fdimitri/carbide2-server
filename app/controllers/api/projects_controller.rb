@@ -86,7 +86,9 @@ class Api::ProjectsController < Api::BaseController
 
   def settings_params
     params.permit(:root_path, :flush_interval_s, :flush_bytes, :shell_image,
-                  :agent_shell_peek_tail_bytes)
+                  :agent_shell_peek_tail_bytes,
+                  :upload_max_entry_bytes, :upload_max_total_bytes,
+                  :upload_max_entries)
   end
 
   def project_json(project)
@@ -107,7 +109,10 @@ class Api::ProjectsController < Api::BaseController
       flush_interval_s: setting.flush_interval_s,
       flush_bytes:      setting.flush_bytes,
       shell_image:      setting.shell_image,
-      agent_shell_peek_tail_bytes: setting.agent_shell_peek_tail_bytes
+      agent_shell_peek_tail_bytes: setting.agent_shell_peek_tail_bytes,
+      upload_max_entry_bytes: setting.upload_max_entry_bytes,
+      upload_max_total_bytes: setting.upload_max_total_bytes,
+      upload_max_entries:     setting.upload_max_entries
     }
   end
 end

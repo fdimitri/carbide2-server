@@ -49,6 +49,7 @@ Rails.application.routes.draw do
           get    'content', action: :content
           get    'stat',    action: :stat
           get    'blob',    action: :blob
+          get    'download', action: :download
           post   'files',   action: :create_file
           post   'dirs',    action: :create_dir
           patch  'rename',  action: :rename

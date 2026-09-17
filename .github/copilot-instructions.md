@@ -95,7 +95,7 @@ Actionable dev/test/run commands (use only when the corresponding files exist):
 System / native dependencies to call out:
 - Linux with inotify support (on-disk notifications). Consider adding `rb-inotify` gem.
 - PTY/terminal access: ensure server will be run on platforms where PTY support is available.
-- Recommend a `Dockerfile` or `docker-compose.yml` to pin system deps for contributors.
+- The workspace runs only as a pod provisioned by the control operator (ADR-031); there is no docker-compose or bare-metal mode.
 
 Patterns & where to look for key features:
 - Websockets / real-time: `app/channels`, `app/javascript` (if using Hotwire/JS), or `lib/sockets`.

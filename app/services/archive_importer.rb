@@ -11,9 +11,6 @@ require 'zlib'
 require 'stringio'
 
 class ArchiveImporter
-  MAX_ENTRY_BYTES = 10 * 1024 * 1024  # 10 MB per entry
-  MAX_TOTAL_BYTES = 200 * 1024 * 1024 # 200 MB extracted total
-  MAX_ENTRIES     = 5_000
 
   Result = Struct.new(:files, :dirs, :skipped, :errors, keyword_init: true)
 
@@ -30,6 +27,10 @@ class ArchiveImporter
     # nil when the project has no configured root yet.
     setting    = project.project_setting
     @root_path = (setting&.root_path.presence || project.default_root_path).to_s.chomp('/').presence
+    # Per-project upload limits. nil = no limit (accept anything).
+    @max_entry_bytes = setting&.upload_max_entry_bytes
+    @max_total_bytes = setting&.upload_max_total_bytes
+    @max_entries     = setting&.upload_max_entries
   end
 
   # Decide format from filename and extract from an open IO.
@@ -60,7 +61,7 @@ class ArchiveImporter
           mkdir(target)
         else
           size = entry.size.to_i
-          if size > MAX_ENTRY_BYTES
+          if @max_entry_bytes && size > @max_entry_bytes
             skip("entry too large: #{entry.name} (#{size} bytes)")
             next
           end
@@ -83,7 +84,7 @@ class ArchiveImporter
           mkdir(target)
         else
           size = entry.size.to_i
-          if size > MAX_ENTRY_BYTES
+          if @max_entry_bytes && size > @max_entry_bytes
             skip("entry too large: #{entry.full_name} (#{size} bytes)")
             next
           end
@@ -98,7 +99,7 @@ class ArchiveImporter
 
   def import_single(io, name)
     data = io.read
-    if data.bytesize > MAX_ENTRY_BYTES
+    if @max_entry_bytes && data.bytesize > @max_entry_bytes
       skip("file too large: #{name} (#{data.bytesize} bytes)")
       return
     end
@@ -109,7 +110,7 @@ class ArchiveImporter
   def add_file(target, data)
     return skip("zip-slip rejected: #{target}") unless target.start_with?(@dest_path == '/' ? '/' : @dest_path + '/') || target == @dest_path
     @total += data.bytesize
-    return skip("total size limit exceeded") if @total > MAX_TOTAL_BYTES
+    return skip("total size limit exceeded") if @max_total_bytes && @total > @max_total_bytes
 
     # Decide binary vs text by null-byte check on the first 8 KB (same heuristic
     # FsLoader uses). Binary content is written straight to disk and tracked
@@ -167,8 +168,8 @@ class ArchiveImporter
   end
 
   def hit_limit?
-    if @count >= MAX_ENTRIES
-      @result.errors << "entry count limit (#{MAX_ENTRIES}) reached"
+    if @max_entries && @count >= @max_entries
+      @result.errors << "entry count limit (#{@max_entries}) reached"
       return true
     end
     false

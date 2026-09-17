@@ -1,6 +1,6 @@
 # ProjectSetting — per-project runtime configuration.
 # One row per project (seeded by migration for existing projects).
-# Nil values mean "use system default" (enforced in VfsFlusher / ProjectContainer).
+# Nil values mean "use system default" (enforced in VfsFlusher).
 class ProjectSetting < ApplicationRecord
   belongs_to :project
 
@@ -12,4 +12,11 @@ class ProjectSetting < ApplicationRecord
   validates :agent_shell_peek_tail_bytes,
             numericality: { greater_than: 0, only_integer: true },
             allow_nil: false
+  # Upload limits (ArchiveImporter). nil = no limit.
+  validates :upload_max_entry_bytes,
+            numericality: { greater_than: 0, only_integer: true }, allow_nil: true
+  validates :upload_max_total_bytes,
+            numericality: { greater_than: 0, only_integer: true }, allow_nil: true
+  validates :upload_max_entries,
+            numericality: { greater_than: 0, only_integer: true }, allow_nil: true
 end

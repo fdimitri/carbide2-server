@@ -1,5 +1,5 @@
 # Environment files must never be baked into the image. The container
-# receives all config via env vars (k8s/docker-compose) or mounted Secrets.
+# receives all config via env vars set by the control operator or mounted Secrets.
 .env
 .env.*
 !.env.example
