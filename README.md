@@ -13,12 +13,12 @@ What works today (June 2026):
 - **Authentication** — Devise email/password. JWT-signed worker tokens per session.
 - **Terminals** — PTY shells via the EventMachine worker. Create, destroy, rename, agent-accessible flag. Each terminal is a `kubectl exec` into the workspace's control-owned shell pod (ADR-029).
 - **Terminal recordings** — asciinema v2 `.cast` files. Start/stop from the UI; REST API for browsing and downloading past sessions.
-- **Editor** — Monaco-based file pane with full read/write support. Edits travel as delta operations (`fs/write`) over the worker WebSocket, are stored as `FileChange` revision rows, and broadcast to co-viewers in real time (`applyRemoteChange`). Peer cursor positions are tracked and shown. Binary files show inline image preview or a download link.
-- **Virtual filesystem (VFS)** — In-database file store (Postgres `file_changes` revision log). Bidirectional disk sync:
-  - `FsLoader` imports a project root into the DB at worker startup.
-  - `VfsFlusher` writes dirty DB entries back to disk on a configurable interval (default 800 ms) and on a byte threshold (default 20 bytes). Settings tunable per-project via the API.
-  - `VfsWatcher` watches disk via inotify and pushes external changes (e.g. edits in a terminal) into the DB, then broadcasts `fs/set_contents` so open editors update immediately.
-  - Binary files tracked (stat/mtime only, content on disk). POSIX mode/owner metadata stored.
+- **Editor** — Monaco-based file pane with full read/write support. Edits travel as delta operations (`fs/write`) over the worker WebSocket, are stored as revisions in the file's DBFS v2 DAG, and the revisions as persisted are broadcast to co-viewers in real time (`applyRemoteChange`). Peer cursor positions are tracked and shown. Binary files show inline image preview or a download link.
+- **Filesystem (DBFS v2)** — Postgres-backed per-file DAG revision store (`lib/dbfs_v2`, design notes in `docs/dbfs_v2/`): `file_nodes` / `branches` / `revisions` / `keyframes` / `blobs`. Every edit is a revision; any state can be reconstructed; an edit based on an older revision is OT-transformed, and overlapping writes are refused as conflicts. Deletes are tombstones — history is never destroyed, and recreating a path resurrects the same node. `ProjectFs` (`app/services/project_fs.rb`) is the carbide2 seam over the library. Disk sync with the working tree on the PVC:
+  - `FsLoader` walks the project root into DBFS at worker startup (text with history: DB wins).
+  - `VfsFlusher` writes text heads that moved back to disk on an interval (default 800 ms) and a byte threshold (default 20 bytes), preserving each file's mode/owner. Binaries are never flushed — the PVC holds the live copy.
+  - `VfsWatcher` absorbs external changes via inotify: text as an anchored `setContents` (merged with editor writes that landed since), binaries through `DbfsV2::Ingest` into the content-addressed blob archive with a guarded read, deletes as tombstones; then broadcasts `fs/set_contents` / `fs/changed` / `fs/created` / `fs/deleted`.
+  - Files over `ProjectFs::MAX_FILE_SIZE` (5 MiB) are tracked metadata-only.
   - Archive import: upload `.tar.gz` or `.zip` via the UI to populate a project.
 - **Chat** — IRC-style channels (join/leave, persistent message history, typing indicators). Channels also host **WebRTC video calls** — a call shares the same context as the text channel. Full-mesh peer-to-peer (newcomer offers, glare-free); the worker is a pure signalling relay (`rtc/join`, `rtc/leave`, `rtc/signal`) and never inspects SDP/ICE. Mic/camera toggles in the chat header. Public STUN only for now — no TURN, so calls between peers behind symmetric NAT may fail until a TURN server is configured.
 - **LLM agent** — Rudimentary but working. Worker-side agent sessions run a tool-call loop against a single hardcoded OpenAI-compatible HTTP endpoint. Per-project conversation history with project/private visibility. Tool results streamed to the client. Conversation list and replay.
@@ -51,7 +51,7 @@ Workspace pod (k8s Deployment ws-<id> in namespace ws-<id>):
 
 Worker:
   ├── term handlers  → PTY (local | docker exec | kubectl exec into project shell pod)
-  ├── fs handlers    → FsStore (FileChange revisions) + VfsFlusher + VfsWatcher (inotify)
+  ├── fs handlers    → FsStore (DBFS v2 revisions) + VfsFlusher + VfsWatcher (inotify)
   ├── chat handlers  → ChatRoom broadcast
   ├── agent handlers → AgentSession → OpenAI-compatible HTTP API
   └── debug handlers → DebugStream pub/sub
@@ -72,9 +72,9 @@ Three processes share a single pod:
 Monaco keypress
   → FilePane.onEditorChange (delta array)
   → workerSocket fs/write
-  → FsStore.handle_write → FileChange.append! (DB)
-  → broadcast fs/change to co-viewers → applyRemoteChange in peer Monacos
-  → VfsFlusher.record_write → flush_single → File.write (disk)
+  → FsStore.handle_write → ProjectFs.write_batch! → DbfsV2::Store#write (revision, OT if stale)
+  → broadcast the persisted revisions as fs/change to co-viewers → applyRemoteChange in peer Monacos
+  → VfsFlusher.record_write → flush_single → DbfsV2::Flusher#flush_file (disk)
 ```
 
 **VFS inotify path (disk → editor):**
@@ -82,7 +82,9 @@ Monaco keypress
 ```
 External write (terminal, git checkout, etc.)
   → inotify close_write event
-  → VfsWatcher.handle_event → FileChange.append! setContents (DB)
+  → VfsWatcher.absorb_path
+      text:   own flush? (digest) → ignore; else DbfsV2::Watcher#ingest_text (setContents anchored to the last flushed revision)
+      binary: queued, off-reactor DbfsV2::Ingest with a per-file read guard
   → broadcast fs/set_contents → FilePane.onFsSetContents → editor.setValue
 ```
 
@@ -196,13 +198,13 @@ Rough priority order. Two guiding principles:
 Quality bar before any item ships: keyboard-operable, p95 interaction <100 ms on the dev cluster, and a named-incumbent gut check ("would I open this instead of GitHub Issues / Linear / Excalidraw / Discord?"). If the answer is no, it stays in the backlog regardless of how much code is written.
 
 1. **Project import from git URL** — on project create, accept an optional `git_url` (+ branch, + optional token). Worker clones into the VFS root path, then `FsLoader` imports as usual. Natural pair with the existing tar/zip import. First version HTTPS-only with token-in-secret; SSH key management can wait.
-2. **Agent: `propose_patch` tool** — writes a staged `FileChange` revision instead of overwriting, so multi-user collab stays consistent and the user accepts/rejects in the editor. First agent "killer tool".
+2. **Agent: `propose_patch` tool** — writes a staged DBFS revision instead of overwriting, so multi-user collab stays consistent and the user accepts/rejects in the editor. First agent "killer tool".
 3. **WebRTC voice/video/screen** — must-have, even though incumbents are better in isolation. Integration is the value: same auth, same room, same window. Peer-to-peer mesh for ≤4 peers. Worker as signaling server only (`rtc/offer`, `rtc/answer`, `rtc/ice` over the existing WS); public STUN + optional TURN env var. Screen-share track piggybacks on the same `RTCPeerConnection`. Dockable pane; mute/camera toggles in chat header. SFU deferred until peer count justifies it.
 4. **Markdown preview pane** — split-view toggle for `.md` files using the existing `utils/markdown.js`. Live re-render on `fs/change`. Same renderer as chat messages so style stays consistent.
-5. **Gists** — durable, revisioned snippet store (not paste-and-forget). A gist is a project with `kind: 'gist'`, reusing `DirectoryEntry` + `FileChange`. Single- or multi-file, fork, comment, public-by-token URL. Embed in chat as a `gist://` reference rendering inline as a read-only Monaco. More useful than a pastebin because edits stay versioned.
-6. **Activity feed** — safe to build because it's data-out: there's no UX surface to ruin. Per-project event stream merging chat, `FileChange` revisions, terminal sessions, agent actions, issue events. Emit as **ActivityStreams 2.0** JSON (W3C, the modern successor to Atom/RSS, substrate of the Fediverse) at `/api/projects/:id/activity.json`. Optional Atom view at `.atom` for feed readers — cheap to add on top of AS2. Worker pushes new entries over WS (`activity/new`) for live UI updates.
+5. **Gists** — durable, revisioned snippet store (not paste-and-forget). A gist is a project with `kind: 'gist'`, reusing DBFS v2 file nodes + revisions. Single- or multi-file, fork, comment, public-by-token URL. Embed in chat as a `gist://` reference rendering inline as a read-only Monaco. More useful than a pastebin because edits stay versioned.
+6. **Activity feed** — safe to build because it's data-out: there's no UX surface to ruin. Per-project event stream merging chat, DBFS revisions, terminal sessions, agent actions, issue events. Emit as **ActivityStreams 2.0** JSON (W3C, the modern successor to Atom/RSS, substrate of the Fediverse) at `/api/projects/:id/activity.json`. Optional Atom view at `.atom` for feed readers — cheap to add on top of AS2. Worker pushes new entries over WS (`activity/new`) for live UI updates.
 7. **Diagram pane (UML, flowcharts, sequence, ERD)** — text-first diagrams stored as `.mmd` / `.puml` / `.d2` files in the VFS so they version, diff, and merge like code. Split-view Monaco + live preview: Mermaid (sequence, flow, class, state, ER, gantt) covers ~80%, PlantUML for heavier UML via sidecar `plantuml.jar`, optional D2 for prettier layouts. Click-to-insert into chat/issues/markdown via the existing markdown renderer's fenced-block hook.
-8. **CRDT / real-time co-editing** — Yjs Y.Doc per open file held in the worker, persisted to DB. The `FileChange` revision log is the natural snapshot substrate; decision needed on whether revisions snapshot from the CRDT or the CRDT layers on top of revisions. The current delta-broadcast path works for two-user sessions but is fragile under reordering/disconnect.
+8. **CRDT / real-time co-editing** — Yjs Y.Doc per open file held in the worker, persisted to DB. The DBFS v2 revision log is the natural snapshot substrate; decision needed on whether revisions snapshot from the CRDT or the CRDT layers on top of revisions. The current delta-broadcast path works for two-user sessions but is fragile under reordering/disconnect.
 9. **LSP multiplexing** — one LSP process per (project, language) in the shell pod; worker proxies LSP messages over WS. `clangd`, `rust-analyzer`, `gopls`, `pyright`, `typescript-language-server` as the first set. Monaco is already language-aware.
 10. **Agent: model/endpoint orchestration** — endpoint is currently hardcoded in the worker. Need a registry of available models and endpoints (per-workspace or per-user), per-agent model selection, and runtime swap without restarting the worker.
 11. **Generic task/command registry** — declarative `.carbide/tasks.yml` per project. Think VS Code `tasks.json` or `Makefile` targets surfaced as UI buttons: user declares named commands (`build`, `test`, `lint`, `flash-firmware`...); each renders as a clickable button in a Tasks pane; worker runs the command in the shell pod and streams output. Replaces the alternative of writing bespoke Vue + worker glue for every toolchain (a "PlatformIO panel", an "npm scripts panel", a "cargo panel"). Adding a new build system becomes a YAML edit by the user, not a code change by us. Bonus: the agent's `shell_exec` tool can call registered tasks by name, so "run the build" stays declarative instead of letting the LLM invent shell strings.
@@ -210,7 +212,7 @@ Quality bar before any item ships: keyboard-operable, p95 interaction <100 ms on
 13. **Client IP in Rails logs** — `externalTrafficPolicy: Local` on Traefik service + `action_dispatch.trusted_proxies` in Rails. Currently logs show kube-proxy gateway IP.
 14. **Frontend container split** — `Dockerfile.frontend` builds `dist/` via nginx; new `frontend` Deployment+Service in `charts/workspace`. Same origin, no CORS changes needed. Shrinks server image and decouples rebuild cycles.
 15. **Production deploy hardening** — `RAILS_MASTER_KEY` k8s Secret mount in chart; `assume_ssl`/`force_ssl`; real ingress hostname; documented production Helm values file.
-16. **Integrated ticketing** — *commodity feature; do only if we can clear the quality bar.* Per-project issue tracker (à la GitHub Issues). Models: `Issue`, `IssueComment`. Reuse chat markdown rendering and `FileChange` cross-linking (`#42` in commit messages auto-closes). Tight scope: list/detail/create/comment/close — no board fields, no SLAs.
+16. **Integrated ticketing** — *commodity feature; do only if we can clear the quality bar.* Per-project issue tracker (à la GitHub Issues). Models: `Issue`, `IssueComment`. Reuse chat markdown rendering and DBFS revision cross-linking (`#42` in commit messages auto-closes). Tight scope: list/detail/create/comment/close — no board fields, no SLAs.
 17. **Kanban board** — *commodity feature, depends on #16.* Column view on top of issues. `BoardColumn` rows per project; `Issue.column_id`. Drag-reorder via WS. Avoid the "shitty knockoff" trap by deferring swimlanes, WIP limits, and custom fields to a follow-up — or skip entirely if users prefer Linear.
 
 ---

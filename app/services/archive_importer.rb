@@ -1,15 +1,13 @@
 # ArchiveImporter — extract an uploaded archive (zip, tar, tar.gz) or a single
-# file and import each entry into a project's DB-backed file tree via
-# DirectoryEntry.create_file! / mkdir_p!.
+# file and import each entry into a project's DBFS v2 tree.
 #
 # Used by POST /api/projects/:project_id/fs/upload.
 #
+# Text entries become (or replace the content of) text nodes. Binary entries
+# take the DBFS binary-write path (ProjectFs.write_binary!): bytes are staged
+# outside the working tree, renamed into place on the PVC, then ingested inline.
+#
 # Returns a stats hash: { files: Int, dirs: Int, skipped: Int, errors: [String] }
-require 'zip'
-require 'minitar'
-require 'zlib'
-require 'stringio'
-
 class ArchiveImporter
 
   Result = Struct.new(:files, :dirs, :skipped, :errors, keyword_init: true)
@@ -22,11 +20,8 @@ class ArchiveImporter
     @result    = Result.new(files: 0, dirs: 0, skipped: 0, errors: [])
     @total     = 0
     @count     = 0
-    # Project's on-disk root, used so binary uploads can land straight on the
-    # VFS without going through the (text-only) FileChange replay path.
-    # nil when the project has no configured root yet.
+    @store     = ProjectFs.store(project.id)
     setting    = project.project_setting
-    @root_path = (setting&.root_path.presence || project.default_root_path).to_s.chomp('/').presence
     # Per-project upload limits. nil = no limit (accept anything).
     @max_entry_bytes = setting&.upload_max_entry_bytes
     @max_total_bytes = setting&.upload_max_total_bytes
@@ -35,8 +30,7 @@ class ArchiveImporter
 
   # Decide format from filename and extract from an open IO.
   def import!(io)
-    DirectoryEntry.ensure_root!(@project.id)
-    DirectoryEntry.mkdir_p!(project_id: @project.id, srcpath: @dest_path, user_id: @user_id) if @dest_path != '/'
+    ProjectFs.ensure_folder!(@store, @dest_path, user_id: @user_id)
 
     case @filename.downcase
     when /\.zip\z/                       then import_zip(io)
@@ -112,42 +106,27 @@ class ArchiveImporter
     @total += data.bytesize
     return skip("total size limit exceeded") if @max_total_bytes && @total > @max_total_bytes
 
-    # Decide binary vs text by null-byte check on the first 8 KB (same heuristic
-    # FsLoader uses). Binary content is written straight to disk and tracked
-    # as a DBFS entry with no FileChange (see #13 in May30-Questions.md).
-    head      = data.byteslice(0, 8192) || ''
-    is_binary = head.b.include?("\x00".b)
-
-    if is_binary
-      if @root_path && Dir.exist?(@root_path)
-        disk_path = File.join(@root_path, target.sub(%r{\A/}, ''))
-        FileUtils.mkdir_p(File.dirname(disk_path))
-        File.binwrite(disk_path, data)
+    # Oversized text goes down the binary path too: it lands on disk and is
+    # tracked metadata-only (ProjectFs.track_oversized!) instead of becoming a
+    # multi-megabyte setContents.
+    if ProjectFs.binary_bytes?(data) || data.bytesize > ProjectFs::MAX_FILE_SIZE
+      ProjectFs.write_binary!(@project, @store, target, data, user_id: @user_id)
+    else
+      text = data.dup.force_encoding('UTF-8')
+      node = @store.find(target)
+      node = node.resolve || node if node
+      if node
+        # An upload over an existing file replaces its content. The setContents
+        # is diffed against the head, so it lands as a mergeable edit; the
+        # worker's flusher writes it to disk. Binary -> text demotes the node
+        # (history stays readable: content type is per revision).
+        node.update_columns(binary: false, updated_at: Time.current) if node.binary?
+        delta = DbfsV2::Delta.new('setContents', { data: text })
+        @store.write(node.path, delta, user_id: @user_id) unless @store.read(node.path) == text
+      else
+        @store.create_file(target, content: text, user_id: @user_id)
       end
-      DirectoryEntry.create_file!(
-        project_id: @project.id,
-        srcpath:    target,
-        user_id:    @user_id,
-        data:       data,
-        binary:     true,
-        mkdirp:     true
-      )
-      @result.files += 1
-      @count += 1
-      return
     end
-
-    # Decode best-effort; binary content survives as UTF-8 replacement chars.
-    text = data.dup.force_encoding('UTF-8')
-    text = text.encode('UTF-8', invalid: :replace, undef: :replace, replace: '') unless text.valid_encoding?
-
-    DirectoryEntry.create_file!(
-      project_id: @project.id,
-      srcpath:    target,
-      user_id:    @user_id,
-      data:       text,
-      mkdirp:     true
-    )
     @result.files += 1
     @count += 1
   rescue => e
@@ -155,7 +134,7 @@ class ArchiveImporter
   end
 
   def mkdir(target)
-    DirectoryEntry.mkdir_p!(project_id: @project.id, srcpath: target, user_id: @user_id)
+    ProjectFs.ensure_folder!(@store, target, user_id: @user_id)
     @result.dirs += 1
     @count += 1
   rescue => e

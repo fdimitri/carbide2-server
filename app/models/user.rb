@@ -15,7 +15,7 @@ class User < ActiveRecord::Base
   after_create :create_user_preference
 
   # The sentinel user owning unattributed (system/import) writes. Resolved
-  # idempotently; see FsLoader and DirectoryEntry.create_file!.
+  # idempotently; see FsLoader and ArchiveImporter.
   def self.system
     find_or_create_by!(control_uuid: SYSTEM_UUID)
   end

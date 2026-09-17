@@ -10,13 +10,15 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_02_000000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_15_000000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
   create_table "agent_conversations", force: :cascade do |t|
     t.bigint "agent_id", null: false
     t.datetime "created_at", null: false
+    t.integer "forked_at_turn"
+    t.bigint "forked_from_id"
     t.datetime "last_activity_at"
     t.bigint "project_id", null: false
     t.string "title"
@@ -25,6 +27,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_000000) do
     t.string "uuid", null: false
     t.string "visibility", default: "project", null: false
     t.index ["agent_id"], name: "index_agent_conversations_on_agent_id"
+    t.index ["forked_from_id"], name: "index_agent_conversations_on_forked_from_id"
     t.index ["project_id", "last_activity_at"], name: "idx_agent_convos_project_recent"
     t.index ["project_id", "user_id", "last_activity_at"], name: "idx_agent_convos_recent"
     t.index ["project_id"], name: "index_agent_conversations_on_project_id"
@@ -34,8 +37,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_000000) do
 
   create_table "agent_messages", force: :cascade do |t|
     t.bigint "agent_conversation_id", null: false
+    t.bigint "agent_turn_id"
     t.text "content"
     t.datetime "created_at", null: false
+    t.datetime "evicted_at"
+    t.integer "expires_at_turn"
     t.string "name"
     t.string "role", null: false
     t.string "tool_call_id"
@@ -43,8 +49,36 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_000000) do
     t.integer "turn", null: false
     t.datetime "updated_at", null: false
     t.bigint "user_id"
+    t.index ["agent_conversation_id", "evicted_at"], name: "idx_agent_messages_evicted"
+    t.index ["agent_conversation_id", "expires_at_turn"], name: "idx_agent_messages_expiry"
     t.index ["agent_conversation_id", "turn"], name: "index_agent_messages_on_agent_conversation_id_and_turn", unique: true
     t.index ["agent_conversation_id"], name: "index_agent_messages_on_agent_conversation_id"
+    t.index ["agent_turn_id"], name: "index_agent_messages_on_agent_turn_id"
+  end
+
+  create_table "agent_turn_usages", force: :cascade do |t|
+    t.bigint "agent_conversation_id", null: false
+    t.bigint "agent_message_id"
+    t.integer "cached_tokens"
+    t.integer "completion_tokens"
+    t.datetime "created_at", null: false
+    t.integer "prompt_tokens"
+    t.integer "total_tokens"
+    t.datetime "updated_at", null: false
+    t.index ["agent_conversation_id", "created_at"], name: "idx_agent_turn_usage_recent"
+    t.index ["agent_conversation_id"], name: "index_agent_turn_usages_on_agent_conversation_id"
+    t.index ["agent_message_id"], name: "index_agent_turn_usages_on_agent_message_id"
+  end
+
+  create_table "agent_turns", force: :cascade do |t|
+    t.bigint "agent_conversation_id", null: false
+    t.datetime "created_at", null: false
+    t.integer "end_turn"
+    t.integer "start_turn", null: false
+    t.string "status", default: "in_progress", null: false
+    t.datetime "updated_at", null: false
+    t.index ["agent_conversation_id", "start_turn"], name: "index_agent_turns_on_agent_conversation_id_and_start_turn", unique: true
+    t.index ["agent_conversation_id"], name: "index_agent_turns_on_agent_conversation_id"
   end
 
   create_table "agents", force: :cascade do |t|
@@ -53,8 +87,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_000000) do
     t.datetime "created_at", null: false
     t.string "description"
     t.boolean "enabled", default: true, null: false
+    t.integer "max_turns"
     t.string "model", null: false
     t.string "name", null: false
+    t.json "peak_hours", default: [], null: false
     t.string "provider_url", null: false
     t.string "role", default: "general", null: false
     t.json "sampling", default: {}, null: false
@@ -62,10 +98,26 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_000000) do
     t.string "slug", null: false
     t.text "system_prompt", default: "", null: false
     t.datetime "updated_at", null: false
-    t.integer "max_turns"
     t.index ["enabled"], name: "index_agents_on_enabled"
     t.index ["role"], name: "index_agents_on_role"
     t.index ["slug"], name: "index_agents_on_slug", unique: true
+  end
+
+  create_table "blobs", primary_key: "digest", id: :string, force: :cascade do |t|
+    t.binary "content", null: false
+    t.datetime "created_at", null: false
+    t.bigint "size", null: false
+    t.datetime "updated_at", null: false
+  end
+
+  create_table "branches", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.uuid "file_node_id", null: false
+    t.uuid "head_revision_id"
+    t.string "name", null: false
+    t.datetime "updated_at", null: false
+    t.index ["file_node_id", "name"], name: "index_branches_on_file_node_id_and_name", unique: true
+    t.index ["file_node_id"], name: "index_branches_on_file_node_id"
   end
 
   create_table "browser_sessions", force: :cascade do |t|
@@ -107,41 +159,37 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_000000) do
     t.index ["user_id"], name: "index_chat_messages_on_user_id"
   end
 
-  create_table "directory_entries", force: :cascade do |t|
+  create_table "file_nodes", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.boolean "binary", default: false, null: false
     t.datetime "created_at", null: false
-    t.integer "created_by_id"
-    t.string "cur_name", null: false
+    t.bigint "created_by"
+    t.string "cur_name"
+    t.datetime "deleted_at"
     t.string "ftype", default: "file", null: false
     t.bigint "last_size"
     t.datetime "mtime"
-    t.integer "owner_id"
+    t.string "owner", null: false
+    t.uuid "parent_id"
+    t.string "path", null: false
     t.string "posix_group"
-    t.integer "posix_mode"
-    t.string "posix_owner"
+    t.integer "posix_mode", default: 420, null: false
     t.bigint "project_id", null: false
-    t.string "srcpath", null: false
+    t.string "symlink_target"
     t.datetime "updated_at", null: false
-    t.index ["owner_id"], name: "index_directory_entries_on_owner_id"
-    t.index ["project_id", "srcpath"], name: "index_directory_entries_on_project_id_and_srcpath", unique: true
-    t.index ["project_id"], name: "index_directory_entries_on_project_id"
+    t.index ["parent_id"], name: "index_file_nodes_on_parent_id"
+    t.index ["project_id", "cur_name"], name: "index_file_nodes_on_project_id_and_cur_name"
+    t.index ["project_id", "deleted_at"], name: "index_file_nodes_on_project_id_and_deleted_at"
+    t.index ["project_id", "parent_id"], name: "index_file_nodes_on_project_id_and_parent_id"
+    t.index ["project_id", "path"], name: "index_file_nodes_on_project_id_and_path", unique: true
   end
 
-  create_table "file_changes", force: :cascade do |t|
-    t.text "change_data"
-    t.string "change_type", null: false
+  create_table "keyframes", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.text "content", null: false
     t.datetime "created_at", null: false
-    t.bigint "directory_entry_id", null: false
-    t.integer "end_char"
-    t.integer "end_line"
-    t.datetime "mtime"
-    t.integer "revision", default: 0, null: false
-    t.integer "start_char", default: 0
-    t.integer "start_line", default: 0
+    t.uuid "file_node_id", null: false
+    t.uuid "revision_id", null: false
     t.datetime "updated_at", null: false
-    t.integer "user_id"
-    t.index ["directory_entry_id", "revision"], name: "index_file_changes_on_directory_entry_id_and_revision"
-    t.index ["directory_entry_id"], name: "index_file_changes_on_directory_entry_id"
+    t.index ["file_node_id", "revision_id"], name: "index_keyframes_on_file_node_id_and_revision_id", unique: true
   end
 
   create_table "project_memberships", force: :cascade do |t|
@@ -164,6 +212,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_000000) do
     t.string "root_path"
     t.string "shell_image"
     t.datetime "updated_at", null: false
+    t.integer "upload_max_entries"
+    t.integer "upload_max_entry_bytes"
+    t.integer "upload_max_total_bytes"
     t.index ["project_id"], name: "index_project_settings_on_project_id", unique: true
   end
 
@@ -175,6 +226,23 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_000000) do
     t.datetime "updated_at", null: false
     t.string "uuid"
     t.index ["uuid"], name: "index_projects_on_uuid", unique: true
+  end
+
+  create_table "revisions", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "branch_id", null: false
+    t.text "bridge"
+    t.text "change_data"
+    t.string "change_type", null: false
+    t.uuid "file_node_id", null: false
+    t.uuid "parent_id"
+    t.string "priority"
+    t.uuid "second_parent_id"
+    t.datetime "timestamp", null: false
+    t.bigint "user_id"
+    t.index ["branch_id"], name: "index_revisions_on_branch_id"
+    t.index ["file_node_id"], name: "index_revisions_on_file_node_id"
+    t.index ["parent_id"], name: "index_revisions_on_parent_id"
+    t.index ["second_parent_id"], name: "index_revisions_on_second_parent_id"
   end
 
   create_table "terminal_recordings", force: :cascade do |t|
@@ -215,39 +283,35 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_000000) do
   create_table "users", force: :cascade do |t|
     t.string "control_uuid"
     t.datetime "created_at", null: false
-    t.datetime "current_sign_in_at"
-    t.string "current_sign_in_ip"
     t.string "email"
-    t.string "encrypted_password", default: "", null: false
-    t.datetime "last_sign_in_at"
-    t.string "last_sign_in_ip"
-    t.string "provider"
-    t.datetime "remember_created_at"
-    t.datetime "reset_password_sent_at"
-    t.string "reset_password_token"
-    t.integer "sign_in_count", default: 0, null: false
-    t.string "uid"
     t.datetime "updated_at", null: false
     t.index ["control_uuid"], name: "index_users_on_control_uuid", unique: true
-    t.index ["reset_password_token"], name: "index_users_on_reset_password_token", unique: true
   end
 
+  add_foreign_key "agent_conversations", "agent_conversations", column: "forked_from_id"
   add_foreign_key "agent_conversations", "agents"
   add_foreign_key "agent_conversations", "projects"
   add_foreign_key "agent_conversations", "users"
   add_foreign_key "agent_messages", "agent_conversations"
+  add_foreign_key "agent_messages", "agent_turns"
   add_foreign_key "agent_messages", "users"
+  add_foreign_key "agent_turn_usages", "agent_conversations"
+  add_foreign_key "agent_turn_usages", "agent_messages"
+  add_foreign_key "agent_turns", "agent_conversations"
+  add_foreign_key "branches", "file_nodes", on_delete: :cascade
   add_foreign_key "browser_sessions", "browser_sessions", column: "forked_from_id"
   add_foreign_key "browser_sessions", "projects"
   add_foreign_key "browser_sessions", "users"
   add_foreign_key "chat_channels", "projects"
   add_foreign_key "chat_messages", "chat_channels"
   add_foreign_key "chat_messages", "users"
-  add_foreign_key "directory_entries", "projects"
-  add_foreign_key "file_changes", "directory_entries"
+  add_foreign_key "file_nodes", "projects", on_delete: :cascade
+  add_foreign_key "keyframes", "file_nodes", on_delete: :cascade
   add_foreign_key "project_memberships", "projects"
   add_foreign_key "project_memberships", "users"
   add_foreign_key "project_settings", "projects"
+  add_foreign_key "revisions", "branches", on_delete: :cascade
+  add_foreign_key "revisions", "file_nodes", on_delete: :cascade
   add_foreign_key "terminal_recordings", "projects"
   add_foreign_key "terminal_recordings", "users", column: "created_by_id"
   add_foreign_key "user_preferences", "users"
