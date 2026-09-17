@@ -71,14 +71,17 @@ class AgentMessage < ApplicationRecord
 
   private
 
-  # tool_calls with arguments stripped — keeps id + function.name so the
-  # matching tool result row still pairs, but drops the (large) call text.
+  # tool_calls with arguments emptied — keeps id + function.name so the
+  # matching tool result row still pairs, but drops the (large) call text. An
+  # evicted call keeps `arguments` as a string rather than omitting the key:
+  # providers reject a function entry without it, the same reason a tool result
+  # keeps an empty `content`.
   def evicted_tool_calls
     tool_calls&.map do |tc|
       fn = tc['function'] || {}
       { 'id' => tc['id'],
         'type' => tc['type'] || 'function',
-        'function' => { 'name' => fn['name'] } }
+        'function' => { 'name' => fn['name'], 'arguments' => '' } }
     end
   end
 end
