@@ -1,4 +1,11 @@
 class Project < ActiveRecord::Base
+  # Raised when a workspace pod would create its canonical project without the
+  # control-owned workspace uuid. Control hands it down as
+  # WORKSPACE_PROJECT_UUID; without it the root path has no stable name, and the
+  # shell pod (which names the same directory in subPath) cannot address it.
+  # A boot error, not a validation: nothing downstream can invent the value.
+  class WorkspaceUuidMissing < StandardError; end
+
   has_many :project_memberships, dependent: :destroy
   has_many :users, through: :project_memberships
   has_many :chat_channels, dependent: :destroy
@@ -25,17 +32,22 @@ class Project < ActiveRecord::Base
   # to the pod as WORKSPACE_PROJECT_UUID. It is stamped here at creation time
   # only; it is never derived from a user token or self-assigned on validation.
   def self.canonical
-    order(:id).first || create!(
-      name: ENV.fetch('WORKSPACE_NAME', 'workspace'),
-      uuid: ENV['WORKSPACE_PROJECT_UUID'].presence,
-    )
+    order(:id).first || begin
+      uuid = ENV['WORKSPACE_PROJECT_UUID'].presence
+      raise WorkspaceUuidMissing, 'Workspace UUID not defined by control' if uuid.blank?
+
+      create!(
+        name: ENV.fetch('WORKSPACE_NAME', 'workspace'),
+        uuid: uuid,
+      )
+    end
   end
 
   # Keyed by uuid, not id: the uuid is the control-owned workspace identity
   # (== ControlProject.uuid), so the operator can name this same directory in
   # the shell pod's subPath without knowing this database's primary keys.
   def default_root_path
-    raise "project #{id} has no uuid; control must hand one down" if uuid.blank?
+    raise WorkspaceUuidMissing, 'Workspace UUID not defined by control' if uuid.blank?
 
     File.join(PROJECTS_ROOT, uuid)
   end
