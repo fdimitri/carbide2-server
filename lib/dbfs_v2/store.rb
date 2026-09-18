@@ -47,20 +47,30 @@ module DbfsV2
       p = normalize(path)
       node = find_any(p)
       if node&.deleted?
-        node.update_columns(deleted_at: nil, symlink_target: normalize(target),
-                            mtime: Time.current, updated_at: Time.current)
-        return node.reload
+        FileNode.transaction do
+          node.update_columns(deleted_at: nil, symlink_target: normalize(target),
+                              mtime: Time.current, updated_at: Time.current)
+          Events.record_node!(@project_id, :created, node.reload, user_id: user_id)
+        end
+        return node
       end
-      FileNode.create!(
-        project_id: @project_id,
-        path: p,
-        ftype: 'file',
-        owner: default_owner,
-        posix_mode: 0o777,
-        symlink_target: normalize(target),
-        created_by: user_id,
-        parent_id: ensure_dir!(File.dirname(p), user_id: user_id).id
-      )
+      # mkdir -p before the transaction: its RecordNotUnique recovery must not
+      # run inside a Postgres transaction it would abort.
+      parent_id = ensure_dir!(File.dirname(p), user_id: user_id).id
+      FileNode.transaction do
+        n = FileNode.create!(
+          project_id: @project_id,
+          path: p,
+          ftype: 'file',
+          owner: default_owner,
+          posix_mode: 0o777,
+          symlink_target: normalize(target),
+          created_by: user_id,
+          parent_id: parent_id
+        )
+        Events.record_node!(@project_id, :created, n, user_id: user_id)
+        n
+      end
     end
 
     def find(path)
@@ -116,7 +126,14 @@ module DbfsV2
       raise 'cannot delete root' if node.root?
 
       now = Time.current
-      FileNode.where(id: tombstone_ids(node)).update_all(deleted_at: now, updated_at: now)
+      FileNode.transaction do
+        # One operation, one seq: the subtree is gone at every cut >= it. Only
+        # nodes that were live get an event; an already-tombstoned descendant
+        # did not change.
+        rows = event_rows(FileNode.live.where(id: tombstone_ids(node)))
+        FileNode.where(id: tombstone_ids(node)).update_all(deleted_at: now, updated_at: now)
+        Events.record!(@project_id, :deleted, rows, user_id: user_id)
+      end
       node.reload
     end
 
@@ -124,7 +141,11 @@ module DbfsV2
     def restore(path, user_id: nil)
       node = find_any(path)
       return nil unless node
-      FileNode.where(id: tombstone_ids(node)).update_all(deleted_at: nil, updated_at: Time.current)
+      FileNode.transaction do
+        rows = event_rows(FileNode.tombstoned.where(id: tombstone_ids(node)))
+        FileNode.where(id: tombstone_ids(node)).update_all(deleted_at: nil, updated_at: Time.current)
+        Events.record!(@project_id, :restored, rows, user_id: user_id)
+      end
       node.reload
     end
 
@@ -155,6 +176,15 @@ module DbfsV2
         collision = FileNode.where(project_id: @project_id, path: to_path).where.not(id: node.id).first
         raise "destination already exists: #{to_path}" if collision
 
+        # Identity survives a move (same node id); what changes is recorded as
+        # one `renamed` event per affected node under one seq — the whole
+        # subtree is either moved or not at any cut. Captured before the
+        # rewrite so from_path is the old path.
+        renamed = FileNode.where(id: tombstone_ids(node)).pluck(:id, :path, :ftype).map do |id, old, ftype|
+          { file_node_id: id, from_path: old, ftype: ftype,
+            path: id == node.id ? to_path : "#{to_path}#{old.delete_prefix(node.path)}" }
+        end
+
         if node.ftype == 'folder'
           old_prefix = "#{node.path}/"
           new_prefix = "#{to_path}/"
@@ -175,6 +205,7 @@ module DbfsV2
           mtime: Time.current,
           updated_at: Time.current
         )
+        Events.record!(@project_id, :renamed, renamed, user_id: user_id)
       end
       node.reload
     end
@@ -290,7 +321,13 @@ module DbfsV2
         else
           node.branches.find_by!(name: from).head_revision_id
         end
-      node.branches.find_or_create_by!(name: name) { |nb| nb.head_revision_id = head }
+      # A branch is born with a seq and its origin (ADR-042): a project state
+      # cut before `seq` does not see it; one cut after it, before its first
+      # commit, resolves to the origin.
+      node.branches.find_or_create_by!(name: name) do |nb|
+        nb.head_revision_id   = head
+        nb.origin_revision_id = head
+      end
     end
 
     def branches(path)
@@ -299,26 +336,58 @@ module DbfsV2
       node.branches.order(:name).map { |b| { name: b.name, head: b.head_revision_id } }
     end
 
-    # Drop a branch row. Nothing in the file's history is lost: revisions are a
-    # parent-linked DAG and `revisions.branch_id` only records which branch
-    # committed each one (Graph labels it; nothing else reads it) — but the
-    # column cascades, so the branch's revisions are re-homed to main first.
-    # Without that, deleting a branch that main fast-forwarded to would delete
-    # main's own head, and deleting an auto-branch would delete the second
-    # parent a rebase recorded. The branch can be recreated later at any of its
+    # Tombstone a branch. Nothing in the file's history is touched: the row
+    # stays so `revisions.branch_id` keeps meaning "the branch this was
+    # committed on" (re-homing them to main would make a past project state on
+    # main gain revisions that were never on main — ADR-042). Hidden from
+    # FileNode#branches; the name is free for reuse. Recreate at any of its
     # revisions with branch(path, name, at_revision:).
     def delete_branch(path, name)
       raise ArgumentError, "cannot delete #{Branch::MAIN}" if name == Branch::MAIN
       node = resolve(path) || find(path)
       raise "no such file: #{path}" unless node
-      b    = node.branches.find_by!(name: name)
-      main = node.branches.find_by!(name: Branch::MAIN)
-      ActiveRecord::Base.transaction do
-        Revision.where(branch_id: b.id).update_all(branch_id: main.id)
-        b.destroy!
-      end
+      node.branches.find_by!(name: name).tombstone!
       DocumentCache.invalidate(node.id, name)
       true
+    end
+
+    # --- project states (ADR-042) -------------------------------------------
+
+    # The project clock: seq of the newest revision or filesystem event.
+    def seq
+      Clock.now(@project_id)
+    end
+
+    # The project's state at (seq, branch_set). Defaults to now on main.
+    def state(seq: nil, branch_set: Branch::MAIN)
+      ProjectState.at(self, seq: seq || self.seq, branch_set: BranchSet.wrap(branch_set))
+    end
+
+    # Name a state: store (seq, branch_set) with the manifest materialized
+    # from them. The name retains it; unnamed states are just numbers.
+    def snapshot!(name, seq: nil, branch_set: Branch::MAIN, user_id: nil)
+      st = state(seq: seq, branch_set: branch_set)
+      ProjectSnapshot.create!(
+        project_id: @project_id, name: name, seq: st.seq,
+        branch_set: st.branch_set.to_h.to_json, manifest: st.to_h.to_json,
+        user_id: user_id, created_at: Time.now.utc
+      )
+    end
+
+    def snapshots
+      ProjectSnapshot.where(project_id: @project_id).order(:seq, :name)
+    end
+
+    def snapshot(name)
+      ProjectSnapshot.find_by(project_id: @project_id, name: name)
+    end
+
+    # Merge project branch `source` into `target`: every file where the two
+    # sets resolve to different branches is merged (fast-forward, else
+    # three-way auto-merge), atomically. See ProjectMerge.
+    def merge_project(target:, source:, user_id: nil)
+      ProjectMerge.merge(self, target_set: BranchSet.wrap(target), source_set: BranchSet.wrap(source),
+                               user_id: user_id)
     end
 
     # Serialize the file's revision DAG (nodes + parent/second-parent edges +
@@ -475,20 +544,36 @@ module DbfsV2
         # A tombstoned parent on the way to a create is resurrected, so a path
         # under a deleted directory can be reused (the dir comes back).
         if existing.deleted?
-          existing.update_columns(deleted_at: nil, updated_at: Time.current)
-          existing.reload
+          FileNode.transaction do
+            existing.update_columns(deleted_at: nil, updated_at: Time.current)
+            Events.record_node!(@project_id, :restored, existing.reload, user_id: user_id)
+          end
         end
         raise "not a directory: #{current_path}" unless existing.ftype == 'folder'
         return existing
       end
 
-      FileNode.create!(
-        project_id: @project_id, path: current_path, ftype: 'folder',
-        owner: default_owner, posix_mode: 0o755, cur_name: part, parent_id: parent_id,
-        created_by: user_id
-      )
+      # A savepoint, so the RecordNotUnique a concurrent creator provokes rolls
+      # back only this insert and not a caller's enclosing transaction.
+      FileNode.transaction(requires_new: true) do
+        n = FileNode.create!(
+          project_id: @project_id, path: current_path, ftype: 'folder',
+          owner: default_owner, posix_mode: 0o755, cur_name: part, parent_id: parent_id,
+          created_by: user_id
+        )
+        Events.record_node!(@project_id, :created, n, user_id: user_id)
+        n
+      end
     rescue ActiveRecord::RecordNotUnique
       find(current_path)
+    end
+
+    # FileEvent row hashes for a scope of nodes (root excluded: it always
+    # exists and is not a project-state fact).
+    def event_rows(scope)
+      scope.where.not(path: '/').pluck(:id, :path, :ftype).map do |id, path, ftype|
+        { file_node_id: id, path: path, ftype: ftype }
+      end
     end
 
     def build_tree(node, include_tombstoned: false)
@@ -521,23 +606,34 @@ module DbfsV2
     # to the unique index to reject (see decisions #23).
     def recreate_or_new(path, ftype:, owner:, group:, mode:, binary: false, user_id:)
       existing = find_any(path)
+      # mkdir -p before the transaction (see create_symlink).
+      parent_id = ensure_dir!(File.dirname(path), user_id: user_id).id
       if existing&.deleted?
-        existing.update_columns(
-          deleted_at: nil, ftype: ftype,
-          owner: owner || existing.owner || default_owner,
-          posix_group: group, posix_mode: mode, binary: binary,
-          created_by: existing.created_by || user_id,
-          parent_id: ensure_dir!(File.dirname(path), user_id: user_id).id,
-          mtime: Time.current, updated_at: Time.current
-        )
-        return existing.reload
+        # Resurrection is a `created` event on the same node id: the path is
+        # back, with this identity (ADR-004), from this seq on.
+        FileNode.transaction do
+          existing.update_columns(
+            deleted_at: nil, ftype: ftype,
+            owner: owner || existing.owner || default_owner,
+            posix_group: group, posix_mode: mode, binary: binary,
+            created_by: existing.created_by || user_id,
+            parent_id: parent_id,
+            mtime: Time.current, updated_at: Time.current
+          )
+          Events.record_node!(@project_id, :created, existing.reload, user_id: user_id)
+        end
+        return existing
       end
-      FileNode.create!(
-        project_id: @project_id, path: path, ftype: ftype,
-        owner: owner || default_owner, posix_group: group, posix_mode: mode,
-        created_by: user_id, binary: binary,
-        parent_id: ensure_dir!(File.dirname(path), user_id: user_id).id
-      )
+      FileNode.transaction do
+        n = FileNode.create!(
+          project_id: @project_id, path: path, ftype: ftype,
+          owner: owner || default_owner, posix_group: group, posix_mode: mode,
+          created_by: user_id, binary: binary,
+          parent_id: parent_id
+        )
+        Events.record_node!(@project_id, :created, n, user_id: user_id)
+        n
+      end
     end
 
     def normalize(path)
@@ -561,6 +657,7 @@ module DbfsV2
       parent_id = branch.head_revision_id
       rev = Revision.create!(
         file_node_id: node.id,
+        project_id: @project_id,
         parent_id: parent_id,
         second_parent_id: second_parent_id,
         branch_id: branch.id,
@@ -647,6 +744,7 @@ module DbfsV2
     def commit_blob_revision(node, branch, digest, size, user_id)
       rev = Revision.create!(
         file_node_id: node.id,
+        project_id: @project_id,
         parent_id: branch.head_revision_id,
         second_parent_id: nil,
         branch_id: branch.id,
