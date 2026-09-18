@@ -80,19 +80,25 @@ it.**
   path)`, each stamped with the node id and a `seq`. `file_nodes.path` and
   `deleted_at` remain the *current* index the filesystem API reads; they are no
   longer the only record.
-- **Branches are born with a `seq` and an origin, and die by tombstone.** A
-  branch records the revision it forked at and when. Deleting a branch marks it
-  deleted; it no longer re-homes its revisions to `main`, because that rewrote
-  which branch a revision belongs to and would change a past state after the
-  fact. The name is free for reuse (the uniqueness index is partial).
+- **Branches are born with a `seq` and an origin, keep a reflog, and die by
+  tombstone.** A branch records the revision it forked at and when. Every head
+  move is logged with a `seq` (`branch_heads`), because a fast-forward moves the
+  pointer onto a revision committed on *another* branch without creating one —
+  so "the newest revision on `b`" is not `b`'s head, the reflog is. Deleting a
+  branch stamps it deleted at a `seq`; it no longer re-homes its revisions to
+  `main`, because that rewrote which branch a revision belongs to and would
+  change a past state after the fact. The name is free for reuse (the
+  uniqueness index is partial).
 - **A branch set `B`** is a name plus optional per-file overrides. Resolution:
-  the file's branch called `B.name` if it exists and existed at `S`; otherwise
-  `main`. Server-made `auto/…` branches are per-file conflict artifacts and
-  never resolve, so no project state can depend on one.
+  the file's branch called `B.name` if it was live at `S` (born at or before,
+  not deleted at or before); otherwise `main`. Server-made `auto/…` branches
+  are per-file conflict artifacts and never resolve, so no project state can
+  depend on one.
 - **The state at `(S, B)`**, per file: existence and path are the fold of the
-  file's events with `seq ≤ S`; content is the newest revision on `B(file)` with
-  `seq ≤ S`, or the branch's origin revision if it had none yet. Folders carry
-  existence only. Switching project branch changes `B`, not `S`.
+  file's events with `seq ≤ S` (`created`/`restored` ⇒ present, `deleted` ⇒
+  absent, `renamed` ⇒ path only); content is `B(file)`'s newest reflog entry
+  with `seq ≤ S` — its origin, right after a fork. Folders carry existence
+  only. Switching project branch changes `B`, not `S`.
 - **Names are materializations.** A snapshot, a tag, or "this run happened
   against R" stores `(S, B)` together with the manifest computed from it, so a
   name survives anything later done to the DAG. Unnamed states cost nothing to
@@ -216,13 +222,14 @@ at any cut.
 
 ```text
 B(file) =
-  the file's branch named B.name                     if it exists, is not deleted,
-                                                     and branch.seq ≤ S
-  the override in B.overrides[file_id]               if present (same conditions)
+  the override in B.overrides[file_id]               if it names a branch live at S
+  the file's branch named B.name                     if live at S
+                                                     (branch.seq ≤ S < deleted_seq)
   main                                               otherwise
 head(file, S) =
-  newest revision with branch_id = B(file) and seq ≤ S
-  else B(file).origin_revision_id                    (forked but not yet written to)
+  newest branch_heads row for B(file) with seq ≤ S   (the reflog: appends share
+                                                      the revision's seq, a
+                                                      fast-forward ticks its own)
 ```
 
 `auto/…` branches are excluded by name. They exist so a refused batch is not
@@ -268,15 +275,18 @@ re-derived.
 
 The substrate is implemented server-side in `DbfsV2`:
 
-- migration: `project_clocks`, `file_events`, `project_snapshots`;
-  `revisions.seq` / `revisions.project_id`; `branches.seq` /
-  `origin_revision_id` / `deleted_at` with the partial unique index; backfill of
-  prehistory.
-- `Clock.tick!`, `Events.record!` from every `Store` operation that changes
-  existence or path, `Revision` stamping in `before_create`.
+- migration: `project_clocks`, `file_events`, `branch_heads`,
+  `project_snapshots`; `revisions.seq` / `revisions.project_id`;
+  `branches.seq` / `origin_revision_id` / `deleted_at` / `deleted_seq` with
+  the partial unique index; backfill of prehistory.
+- `Clock.tick!`; `Events.record!` from every `Store` operation that changes
+  existence or path; `Revision` and `Branch` stamping in `before_create`; the
+  reflog written from `Branch#after_save`, so no head-moving call site can
+  forget it.
 - `ProjectState.at(store, seq:, branch_set:)` → manifest; `diff`, `contains?`,
-  `merge_base`; `BranchSet` with the resolution rule.
-- `Store#snapshot!` / `#snapshots` / `#snapshot`, and `ProjectMerge.merge`.
+  `merge_base`, `read`; `BranchSet` with the resolution rule.
+- `Store#seq` / `#state` / `#snapshot!` / `#snapshots` / `#snapshot` /
+  `#merge_project`, and `ProjectMerge.merge`.
 
 Not in this phase: a wire protocol for project states, a checkout onto the
 working area, and any UI. Those are consumers; this ADR is the model.
