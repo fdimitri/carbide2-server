@@ -157,7 +157,7 @@ module DbfsV2
       by_parent = under.order(:path).group_by { |e| File.dirname(e.path) }
       build = lambda do |n|
         h = { id: n.id, name: n.cur_name, path: n.path, type: n.ftype, binary: n.binary?, symlink: n.symlink?,
-              children: (by_parent[n.path] || []).sort_by { |e| [File.basename(e.path), e.ftype] }.map { |e| build.call(wrap(e)) } }
+              children: (by_parent[n.path] || []).sort_by { |e| [e.ftype == 'folder' ? 0 : 1, File.basename(e.path).downcase] }.map { |e| build.call(wrap(e)) } }
         h[:deleted] = n.deleted? if include_tombstoned
         h
       end

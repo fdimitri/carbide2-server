@@ -63,20 +63,21 @@ module ProjectFs
   # cross-process create race (Rails and the worker's watcher can both create
   # the same path): the loser adopts the winner's row.
   def ensure_file!(store, path, **opts)
-    store.find(path) || store.create_file(path, **opts)
+    branch = opts.fetch(:branch, Branch::MAIN)
+    store.find(path, branch: branch) || store.create_file(path, **opts)
   rescue ActiveRecord::RecordNotUnique
-    store.find(path) or raise
+    store.find(path, branch: branch) or raise
   end
 
   # mkdir -p, idempotent and race-tolerant (see ensure_file!).
-  def ensure_folder!(store, path, user_id: nil)
-    existing = store.find(path)
+  def ensure_folder!(store, path, user_id: nil, branch: Branch::MAIN)
+    existing = store.find(path, branch: branch)
     return existing if existing&.ftype == 'folder'
     raise "not a directory: #{path}" if existing
 
-    store.create_folder(path, user_id: user_id)
+    store.create_folder(path, user_id: user_id, branch: branch)
   rescue ActiveRecord::RecordNotUnique
-    store.find(path) or raise
+    store.find(path, branch: branch) or raise
   end
 
   # Copy POSIX metadata from the file on disk onto the node, so a flush writes
