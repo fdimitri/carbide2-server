@@ -19,23 +19,34 @@ module DbfsV2
     # --- filesystem --------------------------------------------------------
 
     def create_file(path, content: '', owner: nil, group: nil, mode: 0o644, branch: Branch::MAIN, user_id: nil, binary: false)
+      if (fs = branch_fs(branch))
+        return fs.create_file(path, content: content, owner: owner, group: group, mode: mode, user_id: user_id, binary: binary)
+      end
       p = normalize(path)
       node = recreate_or_new(p, ftype: 'file', owner: owner, group: group, mode: mode,
                                 binary: binary, user_id: user_id)
       # Create the requested branch (default 'main'); never rename an existing
       # branch. A file created on 'foo' gets a 'foo' branch, not a renamed main.
-      b = node.branches.find_or_create_by!(name: branch)
-      if content && !content.empty?
-        if binary
-          write_blob_on(node, b, content, user_id: user_id)
-        else
-          append!(node, b, Delta.new('setContents', { data: content }), user_id: user_id)
-        end
+      b = node.branches.find_or_create_by!(name: branch) do |nb|
+        nb.project_branch_id = main_branch.id if branch == Branch::MAIN
       end
+      seed_content!(node, b, content, binary: binary, user_id: user_id) if content && !content.empty?
       node
     end
 
-    def create_folder(path, owner: nil, group: nil, mode: 0o755, user_id: nil)
+    # First content of a new file on a per-file branch row.
+    def seed_content!(node, b, content, binary: false, user_id: nil)
+      if binary
+        write_blob_on(node, b, content, user_id: user_id)
+      else
+        append!(node, b, Delta.new('setContents', { data: content }), user_id: user_id)
+      end
+    end
+
+    def create_folder(path, owner: nil, group: nil, mode: 0o755, user_id: nil, branch: Branch::MAIN)
+      if (fs = branch_fs(branch))
+        return fs.create_folder(path, owner: owner, group: group, mode: mode, user_id: user_id)
+      end
       p = normalize(path)
       return ensure_root!(user_id: user_id) if p == '/'
       recreate_or_new(p, ftype: 'folder', owner: owner, group: group, mode: mode, user_id: user_id)
@@ -43,7 +54,9 @@ module DbfsV2
 
     # Symlink: stores a normalized target DBFS path (ADR-026). The node's ftype
     # stays file/folder; writes/reads resolve through the target.
-    def create_symlink(path, target, user_id: nil)
+    def create_symlink(path, target, user_id: nil, branch: Branch::MAIN)
+      fs = branch_fs(branch)
+      return fs.create_symlink(path, target, user_id: user_id) if fs
       p = normalize(path)
       node = find_any(p)
       if node&.deleted?
@@ -73,23 +86,29 @@ module DbfsV2
       end
     end
 
-    def find(path)
+    def find(path, branch: Branch::MAIN)
+      fs = branch_fs(branch)
+      return fs.find(path) if fs
       FileNode.live.find_by(project_id: @project_id, path: normalize(path))
     end
 
     # Includes tombstoned nodes. Internal (resurrect-on-create); exposed for
     # tests/tools that need to see a soft-deleted path.
-    def find_any(path)
+    def find_any(path, branch: Branch::MAIN)
+      fs = branch_fs(branch)
+      return fs.find_any(path) if fs
       FileNode.find_by(project_id: @project_id, path: normalize(path))
     end
 
     # Resolve a path to the concrete node it refers to (follows symlinks).
-    def resolve(path)
-      node = find(path)
+    def resolve(path, branch: Branch::MAIN)
+      node = find(path, branch: branch)
       node&.resolve
     end
 
-    def stat(path)
+    def stat(path, branch: Branch::MAIN)
+      fs = branch_fs(branch)
+      return fs.stat(path) if fs
       node = find(path)
       return nil unless node
       target = node.resolve
@@ -103,14 +122,18 @@ module DbfsV2
     # Immediate children of `path`, using the parent_id tree edge (indexed).
     # `include_tombstoned: true` also returns soft-deleted children (for an
     # undelete UI); they are tagged `deleted_at`.
-    def list(path = '/', include_tombstoned: false)
+    def list(path = '/', include_tombstoned: false, branch: Branch::MAIN)
+      fs = branch_fs(branch)
+      return fs.list(path, include_tombstoned: include_tombstoned) if fs
       parent = include_tombstoned ? find_any(path) : find(path)
       return [] unless parent
       children_scope(parent, include_tombstoned).order(:cur_name, :ftype)
     end
 
     # Recursive tree node (children nested), for an explorer tree view.
-    def tree(path = '/', include_tombstoned: false)
+    def tree(path = '/', include_tombstoned: false, branch: Branch::MAIN)
+      fs = branch_fs(branch)
+      return fs.tree(path, include_tombstoned: include_tombstoned) if fs
       node = include_tombstoned ? find_any(path) : find(path)
       return nil unless node
       build_tree(node, include_tombstoned: include_tombstoned)
@@ -120,7 +143,9 @@ module DbfsV2
     # PRESERVED — the rows, branches and revisions stay; the node is just hidden
     # (and can be restored, or resurrected by re-creating the same path). Never
     # cascades a destroy.
-    def delete(path, user_id: nil)
+    def delete(path, user_id: nil, branch: Branch::MAIN)
+      fs = branch_fs(branch)
+      return fs.delete(path, user_id: user_id) if fs
       node = find(path)
       return nil unless node
       raise 'cannot delete root' if node.root?
@@ -138,7 +163,9 @@ module DbfsV2
     end
 
     # Undo a delete: clear the tombstone on the node and its subtree.
-    def restore(path, user_id: nil)
+    def restore(path, user_id: nil, branch: Branch::MAIN)
+      fs = branch_fs(branch)
+      return fs.restore(path, user_id: user_id) if fs
       node = find_any(path)
       return nil unless node
       FileNode.transaction do
@@ -159,7 +186,9 @@ module DbfsV2
     # descendant paths (their parent_id edges are untouched — they reference the
     # dir by id). The DAG is never touched: revisions stay keyed to the same
     # file_node_id, so history survives the move.
-    def move(from, to, user_id: nil)
+    def move(from, to, user_id: nil, branch: Branch::MAIN)
+      fs = branch_fs(branch)
+      return fs.move(from, to, user_id: user_id) if fs
       node = find(from)
       raise "no such file: #{from}" unless node
       raise 'cannot move root' if node.root?
@@ -214,6 +243,8 @@ module DbfsV2
     # --- content -----------------------------------------------------------
 
     def read(path, revision_id: nil, branch: Branch::MAIN)
+      fs = branch_fs(branch)
+      return fs.read(path, revision_id: revision_id) if fs
       node = find(path)
       return nil unless node
       node = node.resolve            # self (non-symlink), target, or nil (dangling/cycle)
@@ -228,7 +259,7 @@ module DbfsV2
     # is behind the branch head, the delta is OT-transformed against the
     # intervening revisions so concurrent edits converge.
     def write(path, delta, base_revision_id: nil, branch: Branch::MAIN, user_id: nil, priority: nil)
-      node = resolve(path)
+      node, bname = locate(path, branch, for_write: true)
       raise "no such file: #{path}" unless node
       raise "not a file: #{path}" unless node.ftype == 'file'
       raise "binary file: use write_blob" if node.binary?
@@ -236,7 +267,12 @@ module DbfsV2
       delta = delta.is_a?(Delta) ? delta : Delta.parse(delta['type'] || delta[:type], delta['change_data'] || delta['data'] || delta)
       raise "writeBinary is not a text edit: use write_blob" if delta.type == 'writeBinary'
 
-      b = node.branches.find_by!(name: branch)
+      b = node.branches.find_by!(name: bname)
+      write_node(node, b, delta, base_revision_id: base_revision_id, user_id: user_id, priority: priority)
+    end
+
+    # The OT write path on a resolved node and its per-file branch row.
+    def write_node(node, b, delta, base_revision_id: nil, user_id: nil, priority: nil)
       delta.priority = priority if priority
       delta.priority ||= delta.priority_for(nil)
 
@@ -286,11 +322,12 @@ module DbfsV2
 
     # Replace a binary file's content (full blob) at a branch head. No OT —
     # binary is simple read/write. Returns the new Revision.
-    def write_blob(path, bytes, branch: Branch::MAIN, user_id: nil)      node = resolve(path) || find(path)
+    def write_blob(path, bytes, branch: Branch::MAIN, user_id: nil)
+      node, bname = locate(path, branch, for_write: true)
       raise "no such file: #{path}" unless node
       raise "not a file: #{path}" unless node.ftype == 'file'
       raise "not a binary file: #{path}" unless node.binary?
-      b = node.branches.find_by!(name: branch)
+      b = node.branches.find_by!(name: bname)
       # Same atomic head-read + insert + head-update as write(); prevents two
       # concurrent blobs from forking off the same head and losing a revision.
       ActiveRecord::Base.transaction do
@@ -310,8 +347,8 @@ module DbfsV2
 
     # `at_revision:` forks the new branch at a specific revision of this file
     # instead of at `from`'s head.
-    def branch(path, name, from: Branch::MAIN, at_revision: nil)
-      node = resolve(path) || find(path)
+    def branch(path, name, from: Branch::MAIN, at_revision: nil, branch: Branch::MAIN)
+      node, = locate(path, branch, for_write: true)
       raise "no such file: #{path}" unless node
       head =
         if at_revision
@@ -330,8 +367,8 @@ module DbfsV2
       end
     end
 
-    def branches(path)
-      node = find(path)
+    def branches(path, branch: Branch::MAIN)
+      node, = locate(path, branch)
       return [] unless node
       node.branches.order(:name).map { |b| { name: b.name, head: b.head_revision_id } }
     end
@@ -342,13 +379,80 @@ module DbfsV2
     # main gain revisions that were never on main — ADR-042). Hidden from
     # FileNode#branches; the name is free for reuse. Recreate at any of its
     # revisions with branch(path, name, at_revision:).
-    def delete_branch(path, name)
+    def delete_branch(path, name, branch: Branch::MAIN)
       raise ArgumentError, "cannot delete #{Branch::MAIN}" if name == Branch::MAIN
-      node = resolve(path) || find(path)
+      node, = locate(path, branch)
       raise "no such file: #{path}" unless node
       node.branches.find_by!(name: name).tombstone!
       DocumentCache.invalidate(node.id, name)
       true
+    end
+
+    # --- project branches (ADR-042) -----------------------------------------
+
+    def main_branch
+      ProjectBranch.main_for(@project_id)
+    end
+
+    # The live project branch named `name`, or nil (main, or a name that is
+    # only a detached per-file branch).
+    def project_branch(name)
+      return nil if name.nil? || name.to_s == Branch::MAIN
+      ProjectBranch.live.find_by(project_id: @project_id, name: name.to_s)
+    end
+
+    def project_branches(include_tombstoned: false)
+      scope = ProjectBranch.where(project_id: @project_id)
+      scope = scope.live unless include_tombstoned
+      [main_branch] + scope.where.not(name: Branch::MAIN).order(:seq, :name).to_a
+    end
+
+    # Fork a project branch off `from` (default main): a full copy of its
+    # current entries, content pinned at their heads. See BranchFs.fork!.
+    def create_project_branch(name, from: Branch::MAIN, user_id: nil)
+      parent = from.to_s == Branch::MAIN ? main_branch : ProjectBranch.live.find_by!(project_id: @project_id, name: from.to_s)
+      raise ArgumentError, "branch #{name.inspect} exists" if project_branch(name)
+      BranchFs.fork!(self, name.to_s, from: parent, user_id: user_id)
+    end
+
+    # Tombstone a project branch: its entries and content branches stay (a
+    # past state on it still folds), the name is free for a new row.
+    def delete_project_branch(name)
+      raise ArgumentError, "cannot delete #{Branch::MAIN}" if name.to_s == Branch::MAIN
+      pb = ProjectBranch.live.find_by!(project_id: @project_id, name: name.to_s)
+      pb.tombstone!
+      pb.content_branches.live.find_each { |cb| DocumentCache.invalidate(cb.file_node_id, cb.name) }
+      pb
+    end
+
+    # BranchFs for a non-main project branch (by name or row), else nil: the
+    # signal to take main's code path.
+    def branch_fs(branch)
+      pb = branch.is_a?(ProjectBranch) ? (branch.main? ? nil : branch) : project_branch(branch)
+      pb && BranchFs.new(self, pb)
+    end
+
+    # The node a path names on `branch`, and the per-file branch name content
+    # lives under there. On main (or a detached per-file branch name) that is
+    # the path's node and the name itself. On a project branch the node comes
+    # from the branch's index; with for_write the branch's content row for
+    # that file is created if this is its first write.
+    def locate(path, branch, for_write: false)
+      fs = branch_fs(branch)
+      return [resolve(path) || find(path), branch] unless fs
+      node = fs.resolve(path) || fs.find(path)
+      return [nil, fs.branch.name] unless node
+      fs.ensure_content_branch!(node) if for_write && node.ftype == 'file'
+      [node, fs.branch.name]
+    end
+
+    # A merge whose target names a project branch needs that branch's content
+    # row for this file to exist (it may still be pinned at the fork).
+    def ensure_project_content_branch!(node, name)
+      fs = branch_fs(name)
+      return unless fs
+      n = fs.find_by_node(node)
+      fs.ensure_content_branch!(n) if n
     end
 
     # --- project states (ADR-042) -------------------------------------------
@@ -359,8 +463,8 @@ module DbfsV2
     end
 
     # The project's state at (seq, branch_set). Defaults to now on main.
-    def state(seq: nil, branch_set: Branch::MAIN)
-      ProjectState.at(self, seq: seq || self.seq, branch_set: BranchSet.wrap(branch_set))
+    def state(seq: nil, branch_set: Branch::MAIN, branch: nil)
+      ProjectState.at(self, seq: seq || self.seq, branch_set: BranchSet.wrap(branch_set), branch: branch)
     end
 
     # Name a state: store (seq, branch_set) with the manifest materialized
@@ -392,14 +496,14 @@ module DbfsV2
 
     # Serialize the file's revision DAG (nodes + parent/second-parent edges +
     # branch heads). Read-only projection for traversal or rendering.
-    def dag(path)
-      Graph.dump(self, path)
+    def dag(path, branch: Branch::MAIN)
+      Graph.dump(self, path, branch: branch)
     end
 
     # The DAG condensed for display: linear runs of keystrokes collapsed into
     # one node each, auto-branches folded unless `auto:`. See Graph.condense.
-    def dag_condensed(path, gap_ms: nil, auto: false)
-      Graph.condense(self, path, gap_ms: gap_ms, auto: auto)
+    def dag_condensed(path, gap_ms: nil, auto: false, branch: Branch::MAIN)
+      Graph.condense(self, path, gap_ms: gap_ms, auto: auto, branch: branch)
     end
 
     # Graphviz DOT for `dot -Tsvg`. Merge-commit second parents are dashed.
@@ -415,9 +519,10 @@ module DbfsV2
     # target advanced since, a user-resolved merge is refused rather than
     # recording a commit whose parent silently skipped the concurrent write.
     def merge(path, target:, source:, resolved: nil, user_id: nil, auto: false, expected_head: nil,
-              expected_source_head: nil)
-      node = resolve(path) || find(path)
+              expected_source_head: nil, branch: Branch::MAIN)
+      node, = locate(path, branch, for_write: true)
       raise "no such file: #{path}" unless node
+      ensure_project_content_branch!(node, target)
       if auto
         Merge.merge_auto(node, target_name: target, source_name: source, user_id: user_id, store: self)
       elsif resolved.nil?
@@ -433,9 +538,10 @@ module DbfsV2
     # The three-way view a human resolves in: base/ours/theirs with their
     # revisions, the refused regions, and a diff3 text to start from. See
     # Merge.preview.
-    def merge_preview(path, target:, source:)
-      node = resolve(path) || find(path)
+    def merge_preview(path, target:, source:, branch: Branch::MAIN)
+      node, = locate(path, branch, for_write: true)
       raise "no such file: #{path}" unless node
+      ensure_project_content_branch!(node, target)
       Merge.preview(node, target_name: target, source_name: source)
     end
 
@@ -722,11 +828,11 @@ module DbfsV2
     # the ingest path, where the bytes are stored before the revision is
     # committed.
     def commit_blob(path, digest:, size:, branch: Branch::MAIN, user_id: nil)
-      node = resolve(path) || find(path)
+      node, bname = locate(path, branch, for_write: true)
       raise "no such file: #{path}" unless node
       raise "not a file: #{path}" unless node.ftype == 'file'
       raise "not a binary file: #{path}" unless node.binary?
-      b = node.branches.find_by!(name: branch)
+      b = node.branches.find_by!(name: bname)
       ActiveRecord::Base.transaction do
         locked = Branch.lock.find(b.id)
         head = locked.head_revision_id && Revision.find_by(id: locked.head_revision_id)
@@ -741,11 +847,16 @@ module DbfsV2
     # The digest referenced by the branch head's revision, or nil (not a binary
     # revision / no head). Used by ingest for the idempotency check.
     def head_blob_digest(path, branch: Branch::MAIN)
-      node = resolve(path) || find(path)
+      node, bname = locate(path, branch)
       return nil unless node
-      b = node.branches.find_by(name: branch)
-      return nil unless b && b.head_revision_id
-      rev = Revision.find_by(id: b.head_revision_id)
+      if (fs = branch_fs(branch)) && node.entry.content_branch_id.nil?
+        head = node.entry.revision_id
+      else
+        b = node.branches.find_by(name: bname)
+        head = b&.head_revision_id
+      end
+      return nil unless head
+      rev = Revision.find_by(id: head)
       return nil unless rev && rev.change_type == 'writeBinary'
       rev.payload['sha256']
     end

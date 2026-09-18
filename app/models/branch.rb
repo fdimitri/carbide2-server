@@ -4,6 +4,7 @@ class Branch < ApplicationRecord
 
   belongs_to :file_node
   belongs_to :head, class_name: 'Revision', foreign_key: 'head_revision_id', optional: true
+  belongs_to :project_branch, optional: true
   has_many :branch_heads, dependent: :delete_all
 
   before_validation :assign_id, on: :create

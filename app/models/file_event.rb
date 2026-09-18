@@ -4,6 +4,7 @@
 # node's events with seq <= S is its existence and path at S.
 class FileEvent < ApplicationRecord
   belongs_to :file_node
+  belongs_to :project_branch, optional: true
 
   KINDS = %w[created deleted restored renamed].freeze
 

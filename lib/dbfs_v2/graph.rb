@@ -17,8 +17,8 @@ module DbfsV2
     #   }
     # Nodes/edges are ordered topologically (parent before child) so a consumer
     # can render bottom-up without extra work.
-    def dump(store, path)
-      node = store.find(path)
+    def dump(store, path, branch: Branch::MAIN)
+      node = store.find(path, branch: branch)
       raise "no such file: #{path}" unless node
 
       revs = node.revisions.order(:timestamp, :id).to_a
@@ -85,8 +85,8 @@ module DbfsV2
     #     edges:  [ { from:, to:, kind: 'parent' | 'second_parent' } ]   # run ids
     #   }
     # A node's id is its LAST revision, so a head's revision names its node.
-    def condense(store, path, gap_ms: nil, auto: false)
-      node = store.find(path)
+    def condense(store, path, gap_ms: nil, auto: false, branch: Branch::MAIN)
+      node = store.find(path, branch: branch)
       raise "no such file: #{path}" unless node
 
       # all_branches: a revision committed on a since-deleted branch keeps its

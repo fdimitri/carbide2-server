@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_18_000000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_18_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -110,6 +110,21 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_18_000000) do
     t.datetime "updated_at", null: false
   end
 
+  create_table "branch_entries", force: :cascade do |t|
+    t.uuid "content_branch_id"
+    t.datetime "created_at", null: false
+    t.datetime "deleted_at"
+    t.uuid "file_node_id", null: false
+    t.string "ftype", default: "file", null: false
+    t.string "path", null: false
+    t.uuid "project_branch_id", null: false
+    t.uuid "revision_id"
+    t.datetime "updated_at", null: false
+    t.index ["project_branch_id", "file_node_id"], name: "index_branch_entries_node", unique: true
+    t.index ["project_branch_id", "path"], name: "index_branch_entries_live_path", unique: true, where: "(deleted_at IS NULL)"
+    t.index ["project_branch_id", "path"], name: "index_branch_entries_path"
+  end
+
   create_table "branch_heads", force: :cascade do |t|
     t.uuid "branch_id", null: false
     t.datetime "created_at", null: false
@@ -126,10 +141,12 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_18_000000) do
     t.uuid "head_revision_id"
     t.string "name", null: false
     t.uuid "origin_revision_id"
+    t.uuid "project_branch_id"
     t.bigint "seq", default: 0, null: false
     t.datetime "updated_at", null: false
     t.index ["file_node_id", "name"], name: "index_branches_on_file_node_id_and_name_live", unique: true, where: "(deleted_at IS NULL)"
     t.index ["file_node_id"], name: "index_branches_on_file_node_id"
+    t.index ["project_branch_id"], name: "index_branches_on_project_branch_id"
   end
 
   create_table "browser_sessions", force: :cascade do |t|
@@ -178,10 +195,12 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_18_000000) do
     t.string "ftype", default: "file", null: false
     t.string "kind", null: false
     t.string "path", null: false
+    t.uuid "project_branch_id"
     t.bigint "project_id", null: false
     t.bigint "seq", null: false
     t.bigint "user_id"
     t.index ["file_node_id", "seq"], name: "index_file_events_on_file_node_id_and_seq"
+    t.index ["project_branch_id", "seq"], name: "index_file_events_on_project_branch_id_and_seq"
     t.index ["project_id", "seq"], name: "index_file_events_on_project_id_and_seq"
   end
 
@@ -216,6 +235,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_18_000000) do
     t.uuid "revision_id", null: false
     t.datetime "updated_at", null: false
     t.index ["file_node_id", "revision_id"], name: "index_keyframes_on_file_node_id_and_revision_id", unique: true
+  end
+
+  create_table "project_branches", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.datetime "deleted_at"
+    t.bigint "deleted_seq"
+    t.bigint "fork_seq"
+    t.uuid "forked_from_id"
+    t.boolean "materialized", default: false, null: false
+    t.string "name", null: false
+    t.bigint "project_id", null: false
+    t.bigint "seq", default: 0, null: false
+    t.datetime "updated_at", null: false
+    t.bigint "user_id"
+    t.index ["project_id", "name"], name: "index_project_branches_live_name", unique: true, where: "(deleted_at IS NULL)"
+    t.index ["project_id"], name: "index_project_branches_on_project_id"
   end
 
   create_table "project_clocks", id: false, force: :cascade do |t|

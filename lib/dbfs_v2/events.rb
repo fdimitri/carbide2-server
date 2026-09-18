@@ -13,19 +13,22 @@ module DbfsV2
     module_function
 
     # rows: [{ file_node_id:, path:, ftype:, from_path: (renamed only) }]
+    # `branch`: the ProjectBranch whose existence log this is (nil = main).
     # Returns the seq the operation took.
-    def record!(project_id, kind, rows, user_id: nil)
+    def record!(project_id, kind, rows, user_id: nil, branch: nil)
       raise ArgumentError, "unknown event kind #{kind}" unless FileEvent::KINDS.include?(kind.to_s)
       rows = Array(rows)
       return nil if rows.empty?
 
+      pb_id = (branch || ProjectBranch.main_for(project_id)).id
       ActiveRecord::Base.transaction do
         seq = Clock.tick!(project_id)
         now = Time.now.utc
         FileEvent.insert_all!(rows.map do |r|
           {
-            project_id:   project_id,
-            seq:          seq,
+            project_id:        project_id,
+            project_branch_id: pb_id,
+            seq:               seq,
             file_node_id: r.fetch(:file_node_id),
             kind:         kind.to_s,
             path:         r.fetch(:path),
@@ -40,10 +43,10 @@ module DbfsV2
     end
 
     # Convenience: one event for one node.
-    def record_node!(project_id, kind, node, user_id: nil, from_path: nil)
+    def record_node!(project_id, kind, node, user_id: nil, from_path: nil, branch: nil)
       record!(project_id, kind,
               [{ file_node_id: node.id, path: node.path, ftype: node.ftype, from_path: from_path }],
-              user_id: user_id)
+              user_id: user_id, branch: branch)
     end
   end
 end
