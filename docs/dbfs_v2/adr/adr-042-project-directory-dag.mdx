@@ -123,10 +123,19 @@ it.**
   to it (`branches.project_branch_id`); until then reads come from the pin. A
   file created only on a branch is a `file_nodes` row parked under a
   placeholder path and tombstoned on `main`, so `main` never sees it and the
-  identity is ready to be adopted by a merge. Each project branch is a
-  directory of its own under the project's working area
-  (`/srv/projects/<project>/<branch-uuid>`) when materialized; only `main` is
-  today.
+  identity is ready to be adopted by a merge.
+- **Materializing a branch is the user's choice, per branch.** `main` is the
+  project's working area (`/srv/projects/<project>`) and is always on disk. Any
+  other branch lives in the DBFS alone until the user puts it on disk: then it
+  is its own directory, `<root>/.branches/<branch-uuid>` (the uuid, so a reused
+  name never lands in a stale directory), with its own flusher/watcher pair —
+  the same `VfsFlusher` / `VfsWatcher` / `FsLoader` as `main`, over a
+  `BranchView` (a `Store` bound to the branch, so every read, head query and
+  absorb is branch-scoped without the classes knowing). `.branches` is pruned
+  from `main`'s loader and watcher. Turning it off stops the pair and removes
+  the directory; the DBFS keeps the branch. Materialized branches come back on
+  worker boot. Terminals and agents that need a branch `cd` into its
+  directory.
 - **Project merge is a three-way merge of the whole tree by node identity,
   reconcile-or-conflict, and atomic.** Between a branch and its parent (either
   direction): base is the child's `(base_branch, base_seq)` — the parent at the
@@ -299,8 +308,11 @@ the manifest's content, records the written heads as on-disk, and resumes.
 Events during the pause are dropped by construction; the resumed watcher's next
 comparison finds nothing to ingest. Edits a human or agent makes to that subtree
 *during* the window are lost, which is acceptable if the window is short and
-stated. This is not built in this phase; the rule is recorded so it is not
-re-derived.
+stated. Materializing a project branch sidesteps the rule by construction: the
+branch's directory is written in full *before* its watcher starts, and the
+flusher's first sweep recognises the written bytes as current (the restart
+rule), so there is no window. Checking a `(S, B)` out onto an existing,
+watched directory (open question 2) is where the pause rule applies.
 
 ## What exists
 
@@ -334,15 +346,27 @@ Project branches (step 2):
 - worker (PROTOCOL 10): `fs/project_branches`, `fs/project_branch_create`,
   `fs/project_branch_delete`, `fs/project_merge_preview`, `fs/project_merge`;
   `branch` on every tree/existence/content command selects the project
-  branch; frames carry `branch`. Disk mirrors `main` only.
+  branch; frames carry `branch`.
 - client: the workspace is on a project branch (session doc `branch`); the
   explorer's branch bar (pick, fork, delete, merge ↑ / update ↓) and a
   `project-merge` tab (plan, conflicts, resolutions, commit) over the per-file
   `merge` tab.
 
-Not yet: materializing a non-main branch onto its own directory (a
-flusher/watcher pair per branch under the pause rule below), and a graph of
-project states.
+Materialization (step 3):
+
+- `DbfsV2::BranchView` (`Store#for_branch`, `ProjectFs.store(id, branch:)`),
+  `Store#text_heads(branch:)`; `Flusher#flush_all` walks the bound tree;
+  `FsLoader` takes `branch:`; `.branches` in `FsLoader::PRUNE_DIR_NAMES`.
+- worker (PROTOCOL 11): `BranchMirrors` (one flusher/watcher pair per
+  materialized branch, started on toggle and at boot, stopped on toggle-off
+  and on branch delete); `VfsFlusher` / `VfsWatcher` take `branch:` and every
+  watcher frame carries it; `FsStore.flusher_for(project, branch)` routes
+  disk side effects of writes, creates, renames, deletes and merges to
+  whichever mirror holds the branch. `fs/project_branch_materialize { name,
+  on }` → `fs/project_branch_materialized { branch, on }`; branches on the
+  wire carry `disk` (their directory relative to the project root, or null).
+- client: an on-disk toggle in the explorer's branch bar; the notice shows the
+  directory.
 
 ## Open questions
 
