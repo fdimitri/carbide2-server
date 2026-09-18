@@ -83,7 +83,7 @@ module DbfsV2
       raise ArgumentError, "bad branch name #{name.inspect}" if name.to_s.empty? || name == ProjectBranch::MAIN
       ActiveRecord::Base.transaction do
         pb = ProjectBranch.create!(project_id: store.project_id, name: name, forked_from: from, user_id: user_id)
-        pb.update_columns(fork_seq: pb.seq)
+        pb.update_columns(fork_seq: pb.seq, base_seq: pb.seq, base_branch_id: from.id)
         rows = from.main? ? main_rows(store) : branch_rows(from)
         now  = Time.now.utc
         rows.each { |r| r.merge!(project_branch_id: pb.id, created_at: now, updated_at: now) }
@@ -282,6 +282,28 @@ module DbfsV2
         cb
       end
       b
+    end
+
+    # adopt! — an existing FileNode (from another branch) placed at `path` on
+    # this branch, content pinned at `revision_id`. The identity carries over:
+    # a file created on a branch and merged in is the same node here.
+    def adopt!(record, path, ftype:, revision_id: nil, user_id: nil)
+      p = norm(path)
+      ActiveRecord::Base.transaction do
+        ensure_dir!(File.dirname(p), user_id: user_id)
+        clash = live_entries.find_by(path: p)
+        raise "destination already exists: #{p}" if clash && clash.file_node_id != record.id
+        e = @branch.entries.find_by(file_node_id: record.id)
+        if e
+          e.update_columns(path: p, ftype: ftype, revision_id: revision_id, content_branch_id: nil,
+                           deleted_at: nil, updated_at: Time.current)
+        else
+          e = @branch.entries.create!(file_node: record, path: p, ftype: ftype, revision_id: revision_id)
+        end
+        Events.record!(project_id, :created, [{ file_node_id: record.id, path: p, ftype: ftype }],
+                       user_id: user_id, branch: @branch)
+        wrap(e.reload)
+      end
     end
 
     # Content pointer for ProjectState / merges: [branch_name_or_nil, revision_id].

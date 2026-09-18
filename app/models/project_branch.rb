@@ -10,6 +10,7 @@ class ProjectBranch < ApplicationRecord
 
   MAIN = Branch::MAIN
 
+  belongs_to :base_branch, class_name: 'ProjectBranch', optional: true
   belongs_to :forked_from, class_name: 'ProjectBranch', optional: true
   has_many :entries, class_name: 'BranchEntry', dependent: :delete_all
   has_many :file_events
@@ -55,8 +56,8 @@ class ProjectBranch < ApplicationRecord
   end
 
   def to_h
-    { id: id, name: name, forked_from: forked_from&.name, fork_seq: fork_seq, seq: seq,
-      deleted: deleted?, materialized: materialized }
+    { id: id, name: name, forked_from: forked_from&.name, fork_seq: fork_seq, base_seq: base_seq, seq: seq,
+      base_branch: base_branch&.name, deleted: deleted?, materialized: materialized }
   end
 
   private

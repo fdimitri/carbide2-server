@@ -432,6 +432,43 @@ module DbfsV2
       BranchFs.fork!(self, name.to_s, from: parent, user_id: user_id)
     end
 
+    # adopt! — an existing node placed at `path` on `branch` with its content
+    # at `revision_id` (a project merge bringing a file the source created, or
+    # renamed, onto the target with its identity intact). On main the node's
+    # own row is the index: it moves from wherever it was parked (the
+    # placeholder path of a branch-only file, or a tombstone) to `path`; a
+    # tombstoned stranger at `path` is parked aside so the unique path index
+    # holds. Content lands on the main row as a head move (FF) or a new row.
+    def adopt!(record, path, branch: Branch::MAIN, ftype: nil, revision_id: nil, user_id: nil)
+      fs = branch_fs(branch)
+      ftype ||= record.ftype
+      return fs.adopt!(record, path, ftype: ftype, revision_id: revision_id, user_id: user_id) if fs
+
+      p = normalize(path)
+      FileNode.transaction do
+        parent_id = ensure_dir!(File.dirname(p), user_id: user_id).id
+        clash = find_any(p)
+        if clash && clash.id != record.id
+          raise "destination already exists: #{p}" unless clash.deleted?
+          clash.update_columns(path: "#{BranchFs::PLACEHOLDER}/tombstones/#{clash.id}", parent_id: nil, updated_at: Time.current)
+        end
+        record.update_columns(path: p, cur_name: File.basename(p), parent_id: parent_id, ftype: ftype,
+                              deleted_at: nil, mtime: Time.current, updated_at: Time.current)
+        Events.record_node!(@project_id, :created, record.reload, user_id: user_id)
+        if ftype == 'file' && revision_id
+          b = record.branches.find_by(name: Branch::MAIN)
+          if b
+            b.update!(head_revision_id: revision_id) if b.head_revision_id != revision_id
+          else
+            record.branches.create!(name: Branch::MAIN, project_branch_id: main_branch.id,
+                                    head_revision_id: revision_id, origin_revision_id: revision_id)
+          end
+          DocumentCache.invalidate(record.id, Branch::MAIN)
+        end
+      end
+      record
+    end
+
     # Tombstone a project branch: its entries and content branches stay (a
     # past state on it still folds), the name is free for a new row.
     def delete_project_branch(name)
@@ -509,6 +546,14 @@ module DbfsV2
     def merge_project(target:, source:, user_id: nil)
       ProjectMerge.merge(self, target_set: BranchSet.wrap(target), source_set: BranchSet.wrap(source),
                                user_id: user_id)
+    end
+
+    # Merge one project branch into its parent or the parent into it: the
+    # whole tree, identity and content (ProjectMerge.branches). `dry_run`
+    # previews; `resolutions` settles identity conflicts.
+    def merge_branches(source:, target: Branch::MAIN, resolutions: {}, user_id: nil, dry_run: false)
+      ProjectMerge.branches(self, source: source, target: target, resolutions: resolutions,
+                                  user_id: user_id, dry_run: dry_run)
     end
 
     # Serialize the file's revision DAG (nodes + parent/second-parent edges +

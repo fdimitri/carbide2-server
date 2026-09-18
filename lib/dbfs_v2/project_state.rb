@@ -51,9 +51,20 @@ module DbfsV2
 
       file_ids = present.select { |_, e| e[:ftype] == 'file' }.keys
       resolved = {}                                 # file_id => [branch_name, revision_id]
-      chain.each do |b, cut|
+      chain.each_with_index do |(b, cut), i|
         remaining = file_ids - resolved.keys
         break if remaining.empty?
+        if i == 1
+          # Between the branch's own rows and its parent's history: the
+          # index's pins. A file the branch adopted from a merge (created on
+          # it after the fork) has no row on the parent at the fork; its pin
+          # is its content. (For forked files the pin equals the parent's
+          # head at the fork, so this and the chain agree.)
+          pb.entries.where(file_node_id: remaining).where.not(revision_id: nil)
+            .pluck(:file_node_id, :revision_id).each { |id, rev| resolved[id] = [nil, rev] }
+          remaining = file_ids - resolved.keys
+          break if remaining.empty?
+        end
         rows = if b.main?
                  Branch.where(file_node_id: remaining, name: Branch::MAIN).to_a
                else

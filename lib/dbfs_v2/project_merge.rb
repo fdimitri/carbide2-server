@@ -1,23 +1,282 @@
 # frozen_string_literal: true
 module DbfsV2
-  # ProjectMerge — merge one project branch set into another (ADR-042).
+  # ProjectMerge — merge project state (ADR-042).
   #
-  # Existence is project-wide today (a file exists or not regardless of
-  # branch; only content is per-branch), so the file-set half of a project
-  # merge is trivial and what remains is per-file: for every file where the
-  # two sets resolve to different branches with different heads, merge source
-  # into target — fast-forward where possible, three-way auto-merge otherwise
-  # (Merge.merge_auto, with ADR-036's conflict gate).
+  # Two entry points:
   #
-  # Atomic: all the per-file merges run in one transaction; any file that
-  # conflicts, or whose head moves under its lock, rolls the whole merge back
-  # and is reported in `unresolved`. Nothing is left half-merged.
+  #   ProjectMerge.branches(store, source:, target:, ...)
+  #     A project branch into its parent, or the parent into the branch. A
+  #     three-way merge of the whole tree keyed by node identity: base is the
+  #     child's (base_branch, base_seq) — the parent at the fork, then the
+  #     source of the last merge between the two as it was then — ours the
+  #     target now, theirs the source now. For each
+  #     node the side that changed wins; both changing differently is a
+  #     conflict the caller resolves:
+  #
+  #       rename/rename      A -> B here, A -> C there
+  #       rename/delete      renamed here, deleted there (and the reverse)
+  #       delete/modify      deleted here, content changed there (and the reverse)
+  #       add/collision      added or renamed there onto a path a different
+  #                          node holds here
+  #       content            both changed the text and it does not auto-merge
+  #
+  #     `resolutions` is { node_id => { action: 'ours' | 'theirs' | 'path',
+  #     path: } } for identity conflicts (ours = leave the target as it is,
+  #     theirs = take the source's rename/delete, path = put it at this path
+  #     instead); content conflicts are resolved out of band with the per-file
+  #     merge tab (Store#merge with resolved:), after which they no longer
+  #     conflict here. Atomic: any unresolved conflict rolls everything back
+  #     and comes back in `conflicts`. `dry_run: true` plans and applies in a
+  #     transaction that always rolls back, so a preview is exact.
+  #
+  #   ProjectMerge.merge(store, target_set:, source_set:)
+  #     The older per-file BranchSet merge over main's tree (content only).
   module ProjectMerge
     module_function
 
+    Conflict = Struct.new(:node_id, :kind, :ours, :theirs, :detail, keyword_init: true) do
+      def to_h = { id: node_id, kind: kind, ours: ours, theirs: theirs, detail: detail }.compact
+    end
+
     # Returns
-    #   { merged: true,  seq:, files: [{ path:, target:, source:, action: 'fast_forward' | 'auto' }], unresolved: [] }
-    #   { merged: false, seq:, files: [...would have been...], unresolved: [{ path:, target:, source:, reason:, conflicts: }] }
+    #   { merged: true/false, dry_run:, source:, target:, base_seq:, seq:,
+    #     actions: [{ kind: 'move'|'delete'|'add'|'content', ... }],
+    #     conflicts: [{ id, kind, ours: {path, revision_id}, theirs: {...}, detail }] }
+    def branches(store, source:, target: Branch::MAIN, resolutions: {}, user_id: nil, dry_run: false)
+      src = pb!(store, source)
+      tgt = pb!(store, target)
+      raise ArgumentError, 'source and target are the same branch' if src.id == tgt.id
+      child, parent =
+        if src.forked_from_id == tgt.id then [src, tgt]
+        elsif tgt.forked_from_id == src.id then [tgt, src]
+        else raise ArgumentError, "#{src.name} and #{tgt.name} are not parent and child"
+        end
+
+      resolutions = (resolutions || {}).to_h { |k, v| [k.to_s, (v || {}).transform_keys(&:to_s)] }
+      now  = store.seq
+      base_seq    = child.base_seq || child.fork_seq
+      base_branch = child.base_branch || parent
+      base = ProjectState.at(store, seq: base_seq, branch: base_branch)
+      ours = ProjectState.at(store, seq: now, branch: tgt)
+      thrs = ProjectState.at(store, seq: now, branch: src)
+
+      plan, conflicts = plan(base.entries, ours.entries, thrs.entries, resolutions)
+      result = { merged: false, dry_run: dry_run, source: src.name, target: tgt.name,
+                 base: { branch: base_branch.name, seq: base_seq }, seq: now,
+                 actions: plan.map { |a| a.except(:node) }, conflicts: conflicts.map(&:to_h) }
+      return result unless conflicts.empty?
+
+      applied = []
+      ActiveRecord::Base.transaction do
+        apply!(store, tgt, plan, ours.entries, applied, conflicts, user_id)
+        raise ActiveRecord::Rollback if dry_run || conflicts.any?
+        # What was merged in is now in both: the source as it is at this seq
+        # is the next base.
+        child.update_columns(base_seq: store.seq, base_branch_id: src.id, updated_at: Time.current)
+      end
+      result[:actions]   = applied.map { |a| a.except(:node) }
+      result[:conflicts] = conflicts.map(&:to_h)
+      result[:merged]    = conflicts.empty? && !dry_run
+      result[:seq]       = store.seq
+      result
+    end
+
+    # --- planning ---------------------------------------------------------
+
+    # base/ours/theirs are { node_id => ProjectState::Entry }.
+    def plan(base, ours, theirs, resolutions)
+      actions, conflicts = [], []
+      ids = (base.keys | ours.keys | theirs.keys)
+      # Parents before children so a folder move/delete runs before anything
+      # inside it (which the subtree op then already covered).
+      ids.sort_by! { |id| (theirs[id] || ours[id] || base[id]).path }
+
+      ids.each do |id|
+        b, o, t = base[id], ours[id], theirs[id]
+        t_ex = existence(b, t)
+        o_ex = existence(b, o)
+        t_ct = content_changed?(b, t)
+        o_ct = content_changed?(b, o)
+        next if t_ex == :same && !t_ct                         # theirs untouched
+        res = resolutions[id.to_s]
+
+        case t_ex
+        when :added
+          next if o                                            # already on ours (re-merge)
+          add_at(actions, conflicts, ours, id, t, res, kind: 'add/collision')
+          next
+        when :deleted
+          next if o.nil?                                       # gone on both
+          if o_ex == :renamed || o_ct
+            k = o_ex == :renamed ? 'rename/delete' : 'modify/delete'
+            case res&.dig('action')
+            when 'ours'   then next
+            when 'theirs' then actions << { kind: 'delete', node: id, path: o.path }
+            else conflicts << conflict(id, k, o, t, "#{o_ex == :renamed ? 'renamed' : 'modified'} on #{'ours'}, deleted on theirs")
+            end
+            next
+          end
+          actions << { kind: 'delete', node: id, path: o.path }
+          next
+        when :renamed
+          if o.nil?
+            case res&.dig('action')
+            when 'ours'   then next
+            when 'theirs', 'path'
+              add_at(actions, conflicts, ours, id, t, res, kind: 'add/collision')
+            else conflicts << conflict(id, 'delete/rename', o, t, 'deleted on ours, renamed on theirs')
+            end
+            next
+          end
+          if o_ex == :renamed && o.path != t.path
+            case res&.dig('action')
+            when 'ours'   then nil
+            when 'theirs' then move_to(actions, conflicts, ours, id, o, t.path, 'rename/rename')
+            when 'path'   then move_to(actions, conflicts, ours, id, o, res['path'], 'rename/rename')
+            else conflicts << conflict(id, 'rename/rename', o, t, "#{b.path} renamed to #{o.path} on ours and #{t.path} on theirs")
+            end
+          elsif o_ex != :renamed
+            move_to(actions, conflicts, ours, id, o, res&.dig('action') == 'path' ? res['path'] : t.path, 'rename/collision', res)
+          end
+        end
+
+        # Content changed on theirs.
+        next unless t_ct && t.ftype == 'file'
+        if o.nil?
+          # Deleted on ours, edited on theirs.
+          case res&.dig('action')
+          when 'ours'   then next
+          when 'theirs', 'path' then add_at(actions, conflicts, ours, id, t, res, kind: 'add/collision')
+          else conflicts << conflict(id, 'delete/modify', o, t, 'deleted on ours, modified on theirs')
+          end
+          next
+        end
+        next if o.revision_id == t.revision_id
+        if o_ct
+          next if res&.dig('action') == 'ours'
+          actions << { kind: 'content', node: id, mode: 'merge', source_revision: t.revision_id, ours_revision: o.revision_id }
+        else
+          actions << { kind: 'content', node: id, mode: 'take', source_revision: t.revision_id, ours_revision: o.revision_id }
+        end
+      end
+      [actions, conflicts]
+    end
+
+    def existence(b, x)
+      return :same    if b.nil? && x.nil?
+      return :added   if b.nil?
+      return :deleted if x.nil?
+      b.path == x.path ? :same : :renamed
+    end
+
+    def content_changed?(b, x)
+      return false if b.nil? || x.nil? || x.ftype != 'file'
+      b.revision_id != x.revision_id
+    end
+
+    def add_at(actions, conflicts, ours, id, t, res, kind:)
+      path = res&.dig('action') == 'path' ? res['path'].to_s : t.path
+      return if res&.dig('action') == 'ours'
+      holder = ours.values.find { |e| e.path == path && e.file_node_id != id }
+      if holder
+        conflicts << conflict(id, kind, holder, t, "#{path} is #{holder.ftype} #{holder.file_node_id} on ours")
+      else
+        actions << { kind: 'add', node: id, path: path, ftype: t.ftype, revision: t.revision_id }
+      end
+    end
+
+    def move_to(actions, conflicts, ours, id, o, to, kind, res = nil)
+      return if to.nil? || to == o.path
+      return if res&.dig('action') == 'ours'
+      holder = ours.values.find { |e| e.path == to && e.file_node_id != id }
+      if holder
+        conflicts << conflict(id, kind, o, ProjectState::Entry.new(file_node_id: id, path: to, ftype: o.ftype),
+                              "#{to} is #{holder.ftype} #{holder.file_node_id} on ours")
+      else
+        actions << { kind: 'move', node: id, from: o.path, to: to }
+      end
+    end
+
+    def conflict(id, kind, o, t, detail)
+      Conflict.new(node_id: id, kind: kind, detail: detail,
+                   ours:   o && { path: o.path, revision_id: o.revision_id },
+                   theirs: t && { path: t.path, revision_id: t.revision_id })
+    end
+
+    # --- applying ---------------------------------------------------------
+
+    ORDER = { 'delete' => 0, 'move' => 1, 'add' => 2, 'content' => 3 }.freeze
+
+    # `paths` follows the target's tree through the identity ops so content
+    # ops find each node where it is now.
+    def apply!(store, tgt, plan, ours, applied, conflicts, user_id)
+      b = tgt.name
+      paths = ours.transform_values(&:path)
+      plan.sort_by { |a| ORDER[a[:kind]] }.each do |a|
+        case a[:kind]
+        when 'delete'
+          node = store.find(a[:path], branch: b)
+          next unless node && node.id == a[:node]                # a parent's delete took it
+          store.delete(a[:path], user_id: user_id, branch: b)
+          paths.reject! { |_, p| p == a[:path] || p.start_with?("#{a[:path]}/") }
+          applied << a
+        when 'move'
+          cur = store.find(a[:to], branch: b)
+          next if cur && cur.id == a[:node]                      # moved with its parent
+          from = paths[a[:node]]
+          next unless from && store.find(from, branch: b)&.id == a[:node]
+          store.move(from, a[:to], user_id: user_id, branch: b)
+          paths.each { |id, p| paths[id] = "#{a[:to]}#{p.delete_prefix(from)}" if p == from || p.start_with?("#{from}/") }
+          applied << a.merge(from: from)
+        when 'add'
+          record = FileNode.find(a[:node])
+          store.adopt!(record, a[:path], branch: b, ftype: a[:ftype], revision_id: a[:revision], user_id: user_id)
+          paths[a[:node]] = a[:path]
+          applied << a
+        when 'content'
+          path = paths[a[:node]] or raise "node #{a[:node]} is not on #{b}"
+          node, tname = store.locate(path, b, for_write: true)
+          record = node.resolve || node
+          if a[:mode] == 'take'
+            row = record.branches.find_by!(name: tname)
+            row.update!(head_revision_id: a[:source_revision]) unless row.head_revision_id == a[:source_revision]
+            DocumentCache.invalidate(record.id, tname)
+            applied << a.merge(head: a[:source_revision])
+          else
+            sname = source_row_name(record, a[:source_revision])
+            unless sname
+              conflicts << Conflict.new(node_id: a[:node], kind: 'content', detail: 'source revision has no branch row',
+                                        ours: { path: node.path, revision_id: a[:ours_revision] },
+                                        theirs: { path: node.path, revision_id: a[:source_revision] })
+              next
+            end
+            res = store.merge(node.path, target: tname, source: sname, auto: true, user_id: user_id, branch: b)
+            if res[:merged]
+              applied << a.merge(head: res[:head], fast_forward: res[:fast_forward] == true, source_branch: sname)
+            elsif res[:reason] == 'already at source head'
+              next
+            else
+              conflicts << Conflict.new(node_id: a[:node], kind: 'content', detail: res[:reason],
+                                        ours: { path: node.path, revision_id: a[:ours_revision], branch: tname },
+                                        theirs: { path: node.path, revision_id: a[:source_revision], branch: sname })
+            end
+          end
+        end
+      end
+    end
+
+    # The per-file branch row whose head is `rev` (the source's content row).
+    def source_row_name(record, rev)
+      (record.branches.find_by(head_revision_id: rev) || record.all_branches.find_by(head_revision_id: rev))&.name
+    end
+
+    def pb!(store, name)
+      return store.main_branch if name.to_s == Branch::MAIN
+      store.project_branch(name.to_s) or raise ArgumentError, "no project branch #{name}"
+    end
+
+    # --- per-file BranchSet merge (pre-project-branches) --------------------
+
     def merge(store, target_set:, source_set:, user_id: nil)
       target_set = BranchSet.wrap(target_set)
       source_set = BranchSet.wrap(source_set)
@@ -51,8 +310,6 @@ module DbfsV2
         raise ActiveRecord::Rollback if unresolved.any?
       end
 
-      # Per-file merges invalidated their DocumentCache entries as they went;
-      # after a rollback that is merely a dropped cache, never wrong content.
       { merged: unresolved.empty?, seq: now, files: files, unresolved: unresolved }
     end
   end
