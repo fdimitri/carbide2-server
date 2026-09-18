@@ -110,14 +110,38 @@ it.**
   the manifest of per-file lowest common ancestors and, exactly as with git's
   recursive merge, need not be a state that ever existed; it is an input to
   per-file merges, not something anyone checks out.
-- **Project merge is reconcile-or-conflict, and atomic.** Existence is
-  project-wide today (a file exists or not regardless of branch; only content is
-  per-branch), so the file-set half is trivial and a project merge is the set of
-  per-file merges for every file where the source and target sets resolve to
-  different branches: fast-forward where possible, three-way auto-merge
-  otherwise, all inside one transaction. Any file that conflicts, or whose head
-  moved under its lock, aborts the whole merge and is reported; nothing is left
-  half-merged. What can be reconciled is; the rest is a list for a human.
+- **A project branch is a branch of the whole tree.** `project_branches` rows
+  have UUID identity (a tombstoned name can be reused without reviving its
+  history), a parent and a `fork_seq`, and a `materialized` flag. `main` is a
+  row too. A non-main branch owns a **path index**, `branch_entries`: at the
+  fork, a full copy of the parent's live entries with each file's content
+  **pinned** at the parent's head then — frozen, like a git tree, not an
+  overlay that follows `main`. Existence and identity on the branch are its
+  own `file_events` (`project_branch_id`), and its state at `S` is the fold of
+  its lineage: the parent's log up to `fork_seq`, then its own. A file's first
+  write on the branch forks a per-file content branch named after it and bound
+  to it (`branches.project_branch_id`); until then reads come from the pin. A
+  file created only on a branch is a `file_nodes` row parked under a
+  placeholder path and tombstoned on `main`, so `main` never sees it and the
+  identity is ready to be adopted by a merge. Each project branch is a
+  directory of its own under the project's working area
+  (`/srv/projects/<project>/<branch-uuid>`) when materialized; only `main` is
+  today.
+- **Project merge is a three-way merge of the whole tree by node identity,
+  reconcile-or-conflict, and atomic.** Between a branch and its parent (either
+  direction): base is the child's `(base_branch, base_seq)` — the parent at the
+  fork, then, after each merge between the two, the *source* of that merge as
+  it was then — ours the target now, theirs the source now. Per node, the side
+  that changed wins: a delete, a move, an add (`adopt!`: the same node placed
+  on the target at that path with its content pinned — identity survives the
+  merge), a content take or a per-file auto-merge. Both sides changing
+  differently is a conflict — `rename/rename`, `rename/delete`,
+  `modify/delete` and their reverses, `add/collision` (a different node holds
+  the path), `content` — and the merge takes **resolutions** for the identity
+  kinds (`ours` / `theirs` / `path`) while content conflicts are settled with
+  the per-file three-way merge, after which they no longer conflict here. Any
+  conflict left rolls everything back and is reported; a preview is the same
+  run in a transaction that always rolls back, so it is exact.
 
 ```d2
 # One sequenced log per project; a project state is a cut through it,
@@ -180,9 +204,16 @@ state -> snap: "materialize when named" {style.stroke-dash: 3}
 - Prehistory (`seq 0`) is one undifferentiated state. Backfill assigns every
   pre-existing revision and node to it; nothing older than the migration can be
   cut finer than "before".
-- Existence is not branch-scoped. A project branch cannot yet add or remove a
-  file relative to `main`; that arrives with offline workspaces, and with it the
-  file-set half of project merge becomes real (see Open questions).
+- A project branch's index is a full copy of the parent's entries. Forking a
+  large tree is O(files) rows, and every branch-scoped path lookup goes through
+  `branch_entries` rather than `file_nodes`. The alternative — an overlay that
+  reads through to `main` for untouched files — was rejected because the
+  branch would then *move* when `main` did, which is not what a fork means.
+- A pin (`branch_entries.revision_id`) is set at fork or adopt time and does
+  not itself have history; a file re-adopted onto a branch by a later merge
+  has its earlier pin overwritten, so a state of that branch cut between the
+  two adopts reads the later pin. Files the branch has written are unaffected
+  (their content is a reflog'd branch row).
 - The branch-name uniqueness index is now partial (`WHERE deleted_at IS NULL`),
   which Postgres and SQLite both support but which a reader of the schema has to
   notice.
@@ -286,20 +317,40 @@ The substrate is implemented server-side in `DbfsV2`:
 - `ProjectState.at(store, seq:, branch_set:)` → manifest; `diff`, `contains?`,
   `merge_base`, `read`; `BranchSet` with the resolution rule.
 - `Store#seq` / `#state` / `#snapshot!` / `#snapshots` / `#snapshot` /
-  `#merge_project`, and `ProjectMerge.merge`.
+  `#merge_project`, and `ProjectMerge.merge` (the per-file branch-set merge).
 
-Not in this phase: a wire protocol for project states, a checkout onto the
-working area, and any UI. Those are consumers; this ADR is the model.
+Project branches (step 2):
+
+- migration: `project_branches` (uuid, `forked_from_id`, `fork_seq`,
+  `base_branch_id`/`base_seq`, `deleted_at`/`deleted_seq`, `materialized`),
+  `branch_entries`, `project_branch_id` on `file_events` and `branches`;
+  backfill of a `main` row per project.
+- `ProjectBranch`, `BranchEntry`; `BranchFs` (the filesystem over a branch's
+  index: find/stat/list/tree, create/delete/restore/move, `adopt!`,
+  `ensure_content_branch!`); `Store` operations take `branch:` and dispatch;
+  `Store#create_project_branch` / `#delete_project_branch` /
+  `#project_branches` / `#adopt!` / `#merge_branches`; `ProjectState.at(...,
+  branch:)` folds the lineage; `ProjectMerge.branches`.
+- worker (PROTOCOL 10): `fs/project_branches`, `fs/project_branch_create`,
+  `fs/project_branch_delete`, `fs/project_merge_preview`, `fs/project_merge`;
+  `branch` on every tree/existence/content command selects the project
+  branch; frames carry `branch`. Disk mirrors `main` only.
+- client: the workspace is on a project branch (session doc `branch`); the
+  explorer's branch bar (pick, fork, delete, merge ↑ / update ↓) and a
+  `project-merge` tab (plan, conflicts, resolutions, commit) over the per-file
+  `merge` tab.
+
+Not yet: materializing a non-main branch onto its own directory (a
+flusher/watcher pair per branch under the pause rule below), and a graph of
+project states.
 
 ## Open questions
 
-1. **Branch-scoped existence.** When offline workspaces land, a project branch
-   will need its own file set, and project merge gains a real reconcile step
-   with three set-level conflicts: modify/delete, add/add with different
-   identities, rename/rename. The policy is already decided — reconcile what
-   can be, everything else is a conflict for the user, and a state is not
-   committed while the list is non-empty — but the representation of a pending
-   set-level conflict (the analogue of `auto/…` for content) is not.
+1. ~~**Branch-scoped existence.**~~ Resolved by project branches (above).
+   A pending set-level conflict has no stored representation: the merge is
+   refused with the list, and the answers are given with the next attempt.
+   That is enough while a merge is one sitting; a long-lived "merge in
+   progress" would want the resolutions persisted.
 2. **Checkout.** `ProjectState` produces a manifest; nothing yet writes one onto
    the working area under the pause rule above.
 3. **Compaction of prehistory.** Whether to synthesize finer `seq` values for
@@ -332,7 +383,13 @@ working area, and any UI. Those are consumers; this ADR is the model.
   Rejected: it changes `branch_id` on historical rows, so the state at an
   earlier `S` on `main` would gain revisions that were never on `main`. A
   tombstone preserves the past and frees the name.
-- **First-class project-branch rows with an explicit per-file mapping.**
-  Deferred: the resolution rule with optional overrides covers every current
-  case, and a stored mapping becomes necessary only when existence is
-  branch-scoped.
+- **Project branches as a resolution rule only** (the first draft: a branch
+  set over `main`'s tree, with per-file overrides). Kept for content
+  (`BranchSet`), but not enough once a branch needs its own file set: a rename
+  or an add on the branch has nowhere to live. Hence first-class rows with an
+  explicit per-file index — the mapping the first draft deferred.
+- **A shallow branch index that depends on `main`.** Rejected: see
+  Consequences; the branch would change when `main` changed.
+- **Branch names as identity.** Rejected: reusing a deleted branch's name
+  would attach the old history to the new branch. UUIDs let the name be a
+  label.
