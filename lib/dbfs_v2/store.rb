@@ -299,6 +299,28 @@ module DbfsV2
       node.branches.order(:name).map { |b| { name: b.name, head: b.head_revision_id } }
     end
 
+    # Drop a branch row. Nothing in the file's history is lost: revisions are a
+    # parent-linked DAG and `revisions.branch_id` only records which branch
+    # committed each one (Graph labels it; nothing else reads it) — but the
+    # column cascades, so the branch's revisions are re-homed to main first.
+    # Without that, deleting a branch that main fast-forwarded to would delete
+    # main's own head, and deleting an auto-branch would delete the second
+    # parent a rebase recorded. The branch can be recreated later at any of its
+    # revisions with branch(path, name, at_revision:).
+    def delete_branch(path, name)
+      raise ArgumentError, "cannot delete #{Branch::MAIN}" if name == Branch::MAIN
+      node = resolve(path) || find(path)
+      raise "no such file: #{path}" unless node
+      b    = node.branches.find_by!(name: name)
+      main = node.branches.find_by!(name: Branch::MAIN)
+      ActiveRecord::Base.transaction do
+        Revision.where(branch_id: b.id).update_all(branch_id: main.id)
+        b.destroy!
+      end
+      DocumentCache.invalidate(node.id, name)
+      true
+    end
+
     # Serialize the file's revision DAG (nodes + parent/second-parent edges +
     # branch heads). Read-only projection for traversal or rendering.
     def dag(path)

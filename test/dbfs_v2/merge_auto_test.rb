@@ -114,6 +114,31 @@ class BranchAtRevisionTest < Minitest::Test
     foreign = other.find('/g').branches.first.head_revision_id
     assert_raises(ActiveRecord::RecordNotFound) { s.branch('/f', 'bad', at_revision: foreign) }
   end
+
+  # Deleting a branch main fast-forwarded to must not take main's history with
+  # it (revisions.branch_id cascades): the revisions are re-homed, main still
+  # reads, and the branch can be recreated at its old head.
+  def test_delete_branch_keeps_the_revisions_it_committed
+    s = setup_store
+    s.create_file('/f', content: "a\n")
+    s.branch('/f', 'feat')
+    s.write('/f', d('insertDataSingleLine', { startLine: 1, startChar: 0, data: 'b' }), branch: 'feat')
+    feat_head = s.find('/f').branches.find_by!(name: 'feat').head_revision_id
+    assert s.merge('/f', target: 'main', source: 'feat', auto: true)[:fast_forward]
+    assert_equal feat_head, s.find('/f').branches.find_by!(name: 'main').head_revision_id
+
+    assert s.delete_branch('/f', 'feat')
+    assert_equal %w[main], s.branches('/f').map { |b| b[:name] }
+    assert Revision.exists?(id: feat_head), 'the revision main points at survives'
+    assert_equal "a\nb", s.read('/f')
+    assert_equal "a\nb", DbfsV2::Content.at(s.find('/f'), feat_head)
+
+    s.branch('/f', 'feat', at_revision: feat_head)
+    assert_equal "a\nb", s.read('/f', branch: 'feat')
+
+    assert_raises(ArgumentError) { s.delete_branch('/f', 'main') }
+    assert_raises(ActiveRecord::RecordNotFound) { s.delete_branch('/f', 'nope') }
+  end
 end
 
 class MergeCommitStaleEditTest < Minitest::Test
