@@ -70,9 +70,13 @@ class ProjectFsTest < Minitest::Test
 
     ack = ProjectFs.batch_ack('/f', r)
     assert_equal 'rebased', ack[:mode]
+    assert_equal 'main', ack[:branch], 'the branch written to'
+    assert_equal r.branch, ack[:auto_branch]
+    assert_equal r.branch_head, ack[:auto_branch_head]
     assert_equal "Xone\ntwo!?\n", apply_specs("one\ntwo!?\n", ack[:changes]), 'author: its state -> head'
     frames = ProjectFs.batch_peer_frames('/f', r, user_id: 9)
     assert_equal old_main, frames.first[1][:parent]
+    assert(frames.all? { |_cmd, f| f[:branch] == 'main' })
     view = "Xone\ntwo\n"
     frames.each { |_cmd, f| view = apply_specs(view, [f]) }
     assert_equal "Xone\ntwo!?\n", view, 'peers: old main -> head, frame by frame'
@@ -115,6 +119,34 @@ class ProjectFsTest < Minitest::Test
     @s.write('/f', ins(0, 0, 'X'))
     assert_raises(ProjectFs::UnknownBase) do
       ProjectFs.write_batch!(@s, '/f', [ins(0, 0, 'Y')], base_revision_id: SecureRandom.uuid)
+    end
+  end
+
+  # A batch aimed at a named branch lands there and leaves main alone; a stale
+  # one is rebased onto THAT branch's head, and the frames say which branch.
+  def test_batch_on_a_named_branch
+    @s.create_file('/f', content: "abc\n")
+    main = head(@s, '/f')
+    @s.branch('/f', 'topic')
+
+    r = ProjectFs.write_batch!(@s, '/f', [ins(0, 3, 'd')], base_revision_id: main, branch: 'topic')
+    assert_equal :append, r.mode
+    assert_equal 'topic', r.target
+    assert_equal "abcd\n", @s.read('/f', branch: 'topic')
+    assert_equal "abc\n", @s.read('/f'), 'main untouched'
+    assert_equal main, head(@s, '/f')
+    assert_equal 'topic', ProjectFs.batch_ack('/f', r)[:branch]
+
+    @s.write('/f', ins(0, 0, 'X'), branch: 'topic')                 # someone else, on topic
+    r2 = ProjectFs.write_batch!(@s, '/f', [ins(0, 4, 'e')], base_revision_id: r.head, branch: 'topic')
+    assert_equal :rebased, r2.mode
+    assert_equal "Xabcde\n", @s.read('/f', branch: 'topic')
+    assert_equal "abc\n", @s.read('/f'), 'main still untouched'
+    frames = ProjectFs.batch_peer_frames('/f', r2, user_id: 1)
+    assert(frames.all? { |_cmd, f| f[:branch] == 'topic' })
+
+    assert_raises(ActiveRecord::RecordNotFound) do
+      ProjectFs.write_batch!(@s, '/f', [ins(0, 0, 'Y')], base_revision_id: main, branch: 'nope')
     end
   end
 
