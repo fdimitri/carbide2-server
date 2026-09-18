@@ -1,0 +1,328 @@
+---
+title: "ADR-042: Project revisions over per-file DAGs"
+description: "A project state is (S, B): a cut S through the project's single sequenced log of revisions and file events, resolved through a branch set B. Manifests are materialized frontiers, stored only when named."
+sidebar:
+  order: 42
+  badge:
+    text: Proposed
+    variant: note
+status: Proposed
+implementation_exists: true
+date: "2026-09-18"
+extends:
+  label: ADR-034 (DBFS v2)
+  href: /design/decisions/adr-034-dbfs-v2/
+related:
+  - label: ADR-036 (Branches, ancestry, and merge)
+    href: /design/decisions/adr-036-branches-ancestry-and-merge/
+  - label: ADR-039 (Working-area sync)
+    href: /design/decisions/adr-039-working-area-sync/
+  - label: ADR-041 (Correctness model)
+    href: /design/decisions/adr-041-dbfs-correctness-model/
+---
+
+import AdrHeader from '../../../../components/AdrHeader.astro';
+
+<AdrHeader {...frontmatter} />
+
+## Context
+
+DBFS v2 is a **per-file** DAG. It answers "what is this file at revision R" and
+has no object that means "this project at R" — no commit, no tree, no snapshot.
+Snapshots, undo, provenance ("which repository state did this run against") and
+offline editing all want one, and none can be finished without it.
+
+The first draft of this ADR framed the gap as a choice between an **explicit
+manifest** (a commit-like row holding `file_id → revision_id`) and a **derived
+frontier** (a project state implied by a set of per-file heads), and listed
+"there is no global clock" as the reason neither was a thin wrapper. Both
+halves of that framing were wrong in a useful way:
+
+- There *is* a clock. ADR-041 already serializes every write; the system has a
+  single writer per project (one Postgres, one lock). Anything that single
+  writer stamps is a total order, and a total order is exactly what a project
+  state needs.
+- Manifest and frontier are not alternatives. Git resolves the same question by
+  storing commits and deriving the working tree; here the roles are arranged so
+  that *writes* never pay: derive by default, store when named.
+
+What was right in the first draft is the inventory of facts a project state
+must pin, and the observation that three of the four do not live in the
+revision DAG:
+
+| fact | where it lived | why a path → revision map cannot express it |
+|---|---|---|
+| content | `revisions` | which revision of each file |
+| existence | `file_nodes.deleted_at`, mutated in place | a file present in one state and absent in the other |
+| identity | `file_nodes.path`, mutated in place | rename keeps the node id and changes the path — "the same file moved" |
+| branch | per-file `branches` | a repo-wide branch is a *set* of per-file branches, and that set had no name |
+
+Existence and identity were **current state, not history**: `move` rewrote
+`path`, `delete` set `deleted_at`, and neither left a record. That is the one
+place the substrate was not substrate-quality, and it is a prerequisite for any
+shape of project revision.
+
+## Decision
+
+**A project state is the pair `(S, B)`: a position `S` in the project's single
+sequenced log, resolved through a branch set `B`. It is derived, cheap, and
+nameable; a manifest is a materialized state, stored only when something names
+it.**
+
+- **The clock.** Every project has one monotonic counter. A revision, and every
+  filesystem operation that changes existence or identity, takes the next value
+  **inside the writing transaction**, so sequence order is commit order. One
+  tick per revision; one tick per operation (a subtree delete shares one `seq`,
+  so no cut falls inside it). Everything written before the clock existed is
+  `seq 0`, "prehistory".
+- **Events, not mutations, for existence and identity.** `file_events` is an
+  append-only log: `created`, `deleted`, `restored`, `renamed (from_path →
+  path)`, each stamped with the node id and a `seq`. `file_nodes.path` and
+  `deleted_at` remain the *current* index the filesystem API reads; they are no
+  longer the only record.
+- **Branches are born with a `seq` and an origin, and die by tombstone.** A
+  branch records the revision it forked at and when. Deleting a branch marks it
+  deleted; it no longer re-homes its revisions to `main`, because that rewrote
+  which branch a revision belongs to and would change a past state after the
+  fact. The name is free for reuse (the uniqueness index is partial).
+- **A branch set `B`** is a name plus optional per-file overrides. Resolution:
+  the file's branch called `B.name` if it exists and existed at `S`; otherwise
+  `main`. Server-made `auto/…` branches are per-file conflict artifacts and
+  never resolve, so no project state can depend on one.
+- **The state at `(S, B)`**, per file: existence and path are the fold of the
+  file's events with `seq ≤ S`; content is the newest revision on `B(file)` with
+  `seq ≤ S`, or the branch's origin revision if it had none yet. Folders carry
+  existence only. Switching project branch changes `B`, not `S`.
+- **Names are materializations.** A snapshot, a tag, or "this run happened
+  against R" stores `(S, B)` together with the manifest computed from it, so a
+  name survives anything later done to the DAG. Unnamed states cost nothing to
+  keep because they are a number; named ones are retained by whatever named
+  them. That answers garbage collection.
+- **Comparison needs no new algorithm.** Containment is per-file ancestry
+  (ADR-036). The diff set of two states on one branch set is the files with any
+  revision or event in `(S_A, S_B]` — one indexed range scan. The merge base is
+  the manifest of per-file lowest common ancestors and, exactly as with git's
+  recursive merge, need not be a state that ever existed; it is an input to
+  per-file merges, not something anyone checks out.
+- **Project merge is reconcile-or-conflict, and atomic.** Existence is
+  project-wide today (a file exists or not regardless of branch; only content is
+  per-branch), so the file-set half is trivial and a project merge is the set of
+  per-file merges for every file where the source and target sets resolve to
+  different branches: fast-forward where possible, three-way auto-merge
+  otherwise, all inside one transaction. Any file that conflicts, or whose head
+  moved under its lock, aborts the whole merge and is reported; nothing is left
+  half-merged. What can be reconciled is; the rest is a list for a human.
+
+```d2
+# One sequenced log per project; a project state is a cut through it,
+# resolved per file through a branch set.
+direction: right
+
+log: "project log (seq)" {
+  direction: right
+  e1: "1 created /a.rb"
+  r2: "2 rev /a.rb main"
+  e3: "3 created /b.rb"
+  r4: "4 rev /b.rb main"
+  r5: "5 rev /a.rb feature"
+  e6: "6 renamed /b.rb → /c.rb"
+  r7: "7 rev /a.rb main"
+  e1 -> r2 -> e3 -> r4 -> r5 -> e6 -> r7
+}
+
+cut: "S = 6" {
+  style.stroke-dash: 3
+}
+log.e6 -> cut
+
+state: "state (6, feature)" {
+  direction: down
+  a: "/a.rb → rev 5 (feature)"
+  c: "/c.rb → rev 4 (main: no feature branch)"
+}
+cut -> state: "fold events ≤ 6\nnewest rev ≤ 6 on B(file)"
+
+snap: "snapshot 'release-1'\n(S, B) + manifest"
+state -> snap: "materialize when named" {style.stroke-dash: 3}
+```
+
+## Consequences
+
+**Positive**
+
+- A project revision is an integer plus a branch set. Provenance is "seq 4812";
+  undo is "the state at 4812 − k"; a snapshot is that pair with its manifest
+  written down.
+- No project-level object is dirtied by a write. The clock tick is one `UPDATE`
+  on one row in a transaction that already holds a row lock.
+- Rename and delete are history for the first time. "What was `/b.rb` called at
+  S" is a fold of four kinds of event, not a guess.
+- Branch deletion no longer alters the past.
+- The open questions of the first draft collapse: the manifest/frontier choice
+  (both, in their proper roles), project branches (a resolution rule), the
+  project merge base (per-file LCAs), snapshot cost (a number), garbage
+  collection (names retain).
+
+**Negative / to resolve**
+
+- The counter row is a per-project hot spot: it serializes every write in a
+  project, not only writes to one branch. Writes are batches, not keystrokes,
+  and the lock is held for the duration of an insert, so this is acceptable; it
+  is also exactly the stronger ordering the clock is buying. It stops being
+  acceptable if writes ever run outside the lock (offline), which is already
+  the line ADR-041 draws.
+- Prehistory (`seq 0`) is one undifferentiated state. Backfill assigns every
+  pre-existing revision and node to it; nothing older than the migration can be
+  cut finer than "before".
+- Existence is not branch-scoped. A project branch cannot yet add or remove a
+  file relative to `main`; that arrives with offline workspaces, and with it the
+  file-set half of project merge becomes real (see Open questions).
+- The branch-name uniqueness index is now partial (`WHERE deleted_at IS NULL`),
+  which Postgres and SQLite both support but which a reader of the schema has to
+  notice.
+
+### The clock, precisely
+
+```ruby
+# inside the writing transaction:
+INSERT INTO project_clocks (project_id, seq) VALUES (?, 1)
+  ON CONFLICT (project_id) DO UPDATE SET seq = project_clocks.seq + 1
+  RETURNING seq
+```
+
+A Postgres `SEQUENCE` would not do: sequences are not commit-ordered (a
+transaction that drew 41 can commit after the one that drew 42). The counter
+row's lock is held until commit, so the next writer cannot draw until the
+previous value is durable, and `seq` order **is** commit order. `Revision`
+draws its value in `before_create`, which runs inside the save's transaction;
+the four call sites that create revisions (append, blob write, both merge
+paths) therefore need no changes and cannot forget.
+
+### Events
+
+```jsonc
+// file_events — append-only; one seq per operation
+{ "seq": 6, "file_node_id": "…", "kind": "renamed", "path": "/c.rb", "from_path": "/b.rb", "user_id": 7 }
+{ "seq": 9, "file_node_id": "…", "kind": "deleted",  "path": "/c.rb" }
+{ "seq": 12, "file_node_id": "…", "kind": "restored", "path": "/c.rb" }
+```
+
+Recreating a path over a tombstone (ADR-004's "same identity resurrected") is a
+`created` event on the same node id. A folder move emits one `renamed` per
+descendant under the one `seq`, so the subtree is either all moved or all not
+at any cut.
+
+### Resolving a branch set
+
+```text
+B(file) =
+  the file's branch named B.name                     if it exists, is not deleted,
+                                                     and branch.seq ≤ S
+  the override in B.overrides[file_id]               if present (same conditions)
+  main                                               otherwise
+head(file, S) =
+  newest revision with branch_id = B(file) and seq ≤ S
+  else B(file).origin_revision_id                    (forked but not yet written to)
+```
+
+`auto/…` branches are excluded by name. They exist so a refused batch is not
+lost (ADR-037); they are not places a project state may point.
+
+```d2
+# Project merge: per-file merges where the two sets resolve differently,
+# in one transaction; any conflict aborts all of it.
+direction: right
+
+src: "source set\n(feature)"
+tgt: "target set\n(main)"
+res: "resolve per file\nB_src(f) vs B_tgt(f)"
+same: "same branch\n→ nothing"
+ff: "fast-forward"
+auto: "three-way auto-merge\n(ADR-036 gate)"
+ok: "commit all\n(one transaction)"
+stop: "unresolved list\n→ rollback, report"
+
+src -> res
+tgt -> res
+res -> same
+res -> ff: "ancestor"
+res -> auto: "diverged"
+ff -> ok
+auto -> ok: "disjoint"
+auto -> stop: "overlapping writes\nor head moved under lock"
+```
+
+### Materialization and the watcher
+
+Writing a state `(S, B)` onto the working area (ADR-039) is a burst of external
+edits as far as the watcher is concerned. The rule is simple and not
+project-specific: the flusher **pauses the watcher on that subtree**, writes
+the manifest's content, records the written heads as on-disk, and resumes.
+Events during the pause are dropped by construction; the resumed watcher's next
+comparison finds nothing to ingest. Edits a human or agent makes to that subtree
+*during* the window are lost, which is acceptable if the window is short and
+stated. This is not built in this phase; the rule is recorded so it is not
+re-derived.
+
+## What exists
+
+The substrate is implemented server-side in `DbfsV2`:
+
+- migration: `project_clocks`, `file_events`, `project_snapshots`;
+  `revisions.seq` / `revisions.project_id`; `branches.seq` /
+  `origin_revision_id` / `deleted_at` with the partial unique index; backfill of
+  prehistory.
+- `Clock.tick!`, `Events.record!` from every `Store` operation that changes
+  existence or path, `Revision` stamping in `before_create`.
+- `ProjectState.at(store, seq:, branch_set:)` → manifest; `diff`, `contains?`,
+  `merge_base`; `BranchSet` with the resolution rule.
+- `Store#snapshot!` / `#snapshots` / `#snapshot`, and `ProjectMerge.merge`.
+
+Not in this phase: a wire protocol for project states, a checkout onto the
+working area, and any UI. Those are consumers; this ADR is the model.
+
+## Open questions
+
+1. **Branch-scoped existence.** When offline workspaces land, a project branch
+   will need its own file set, and project merge gains a real reconcile step
+   with three set-level conflicts: modify/delete, add/add with different
+   identities, rename/rename. The policy is already decided — reconcile what
+   can be, everything else is a conflict for the user, and a state is not
+   committed while the list is non-empty — but the representation of a pending
+   set-level conflict (the analogue of `auto/…` for content) is not.
+2. **Checkout.** `ProjectState` produces a manifest; nothing yet writes one onto
+   the working area under the pause rule above.
+3. **Compaction of prehistory.** Whether to synthesize finer `seq` values for
+   pre-migration revisions from their timestamps, or leave `seq 0` as one state.
+   Timestamps are not commit-ordered, so any such backfill is approximate and
+   should be labelled as such.
+
+## Out of scope
+
+- **Running a merge or transform outside the server lock.** That is offline
+  editing, and it changes ADR-041 before it changes this ADR.
+- **Agent-conversation DAGs** (ADR-032) — a different graph with a different
+  merge.
+
+## Alternatives considered
+
+- **Explicit manifest as the primary object.** Rejected as the *primary*: every
+  write would dirty a project-level row, and the manifest is derivable from the
+  log anyway. Kept as the materialization of named states, where it earns its
+  storage.
+- **Derived frontier with no clock.** Rejected: without a total order a frontier
+  is a set of heads with no way to say "the one before this", so states cannot
+  be named, diffed cheaply, or undone. The clock is what makes derivation
+  sufficient.
+- **A timestamp as the cut.** Rejected as a premise: per-file writes are
+  independent transactions and their timestamps are not commit-ordered. The
+  sequence number is assigned under the lock precisely so that it is.
+- **A Postgres `SEQUENCE` for `seq`.** Rejected: not commit-ordered (above).
+- **Re-homing a deleted branch's revisions to `main`** (the earlier behaviour).
+  Rejected: it changes `branch_id` on historical rows, so the state at an
+  earlier `S` on `main` would gain revisions that were never on `main`. A
+  tombstone preserves the past and frees the name.
+- **First-class project-branch rows with an explicit per-file mapping.**
+  Deferred: the resolution rule with optional overrides covers every current
+  case, and a stored mapping becomes necessary only when existence is
+  branch-scoped.
