@@ -110,8 +110,9 @@ class GraphTest < Minitest::Test
     end
 
     g = @s.dag_condensed('/f')
-    # create (user 1) + 5 keystrokes (user 1) = one run; users 2's 5 = one run (no gap set)
-    assert_equal [6, 5], g[:nodes].map { |n| n[:count] }
+    # An empty create writes no revision: user 1's 5 keystrokes = one run;
+    # user 2's 5 = one run (no gap set).
+    assert_equal [5, 5], g[:nodes].map { |n| n[:count] }
     assert_equal [1, 2], g[:nodes].map { |n| n[:user_id] }
     assert_equal head_of('main'), g[:nodes].last[:id], 'a node is named by its last revision'
     assert_equal 1, g[:edges].size
@@ -119,7 +120,7 @@ class GraphTest < Minitest::Test
     assert_equal [{ branch: 'main', revision: head_of('main') }], g[:heads]
 
     g = @s.dag_condensed('/f', gap_ms: 3000)
-    assert_equal [6, 3, 2], g[:nodes].map { |n| n[:count] }, 'the 10 s pause splits user 2'
+    assert_equal [5, 3, 2], g[:nodes].map { |n| n[:count] }, 'the 10 s pause splits user 2'
     assert_equal 3000, g[:gap_ms]
   end
 

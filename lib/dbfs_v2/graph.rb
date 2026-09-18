@@ -121,7 +121,9 @@ module DbfsV2
       gap = gap_ms.to_i.positive? ? gap_ms.to_f / 1000.0 : nil
       runs   = []
       run_of = {}
-      topological(revs, present).each do |r|
+      index  = {}
+      topological(revs, present).each_with_index do |r, i|
+        index[r[:id]] = i
         p   = r[:parent_id] && present[r[:parent_id]]
         run = p && run_of[p[:id]]
         joins = run && !run[:closed] && run[:last][:id] == p[:id] &&
@@ -138,6 +140,13 @@ module DbfsV2
         run[:closed] = true if r[:second_parent_id]
         run_of[r[:id]] = run
       end
+      # A node is named by its LAST revision, so order nodes by where that
+      # revision sits topologically, not by where the run began: a run that
+      # ends in a merge commit must come after the run holding its second
+      # parent, even though it started earlier. Every edge source is a run's
+      # last revision (forks and merge sources end runs), so this keeps each
+      # edge's source before its target.
+      runs.sort_by! { |run| index[run[:last][:id]] }
 
       nodes = runs.map do |run|
         f, l = run[:first], run[:last]
