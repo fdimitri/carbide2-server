@@ -548,6 +548,11 @@ module DbfsV2
                                user_id: user_id)
     end
 
+    # The project's branches as a rail graph (ProjectGraph.build).
+    def project_graph(gap_ms: nil)
+      ProjectGraph.build(self, gap_ms: gap_ms)
+    end
+
     # Merge one project branch into its parent or the parent into it: the
     # whole tree, identity and content (ProjectMerge.branches). `dry_run`
     # previews; `resolutions` settles identity conflicts.

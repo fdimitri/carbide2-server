@@ -73,6 +73,8 @@ module DbfsV2
         # What was merged in is now in both: the source as it is at this seq
         # is the next base.
         child.update_columns(base_seq: store.seq, base_branch_id: src.id, updated_at: Time.current)
+        ProjectMergeRecord.create!(project_id: store.project_id, source: src, target: tgt, seq: store.seq,
+                                   base_seq: base_seq, user_id: user_id, created_at: Time.current)
       end
       result[:actions]   = applied.map { |a| wire(a) }
       result[:conflicts] = conflicts.map(&:to_h)

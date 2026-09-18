@@ -271,6 +271,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_18_130000) do
     t.index ["user_id"], name: "index_project_memberships_on_user_id"
   end
 
+  create_table "project_merges", force: :cascade do |t|
+    t.bigint "base_seq"
+    t.datetime "created_at", null: false
+    t.bigint "project_id", null: false
+    t.bigint "seq", null: false
+    t.uuid "source_id", null: false
+    t.uuid "target_id", null: false
+    t.bigint "user_id"
+    t.index ["project_id", "seq"], name: "index_project_merges_on_project_id_and_seq"
+  end
+
   create_table "project_settings", force: :cascade do |t|
     t.integer "agent_shell_busy_timeout_s", default: 60, null: false
     t.integer "agent_shell_peek_tail_bytes", default: 1024, null: false
