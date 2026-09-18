@@ -41,14 +41,16 @@ class FsLoader
   # Directories that must never enter DBFS, at ANY depth (the anchored
   # IGNORED_PATTERNS above only match at the project root). The VfsWatcher
   # mirrors this set so the two can't drift.
-  PRUNE_DIR_NAMES = %w[.git node_modules .bundle].freeze
+  # .branches holds materialized project branches (their own flusher/watcher
+  # pairs); main's walk and watcher must not see it.
+  PRUNE_DIR_NAMES = %w[.git node_modules .bundle .branches].freeze
 
-  def initialize(project_id:, root_path:, verbose: true)
+  def initialize(project_id:, root_path:, verbose: true, branch: Branch::MAIN)
     @project_id = project_id
     @root_path  = File.expand_path(root_path)
     @user_id    = User.system.id
     @verbose    = verbose
-    @store      = ProjectFs.store(project_id)
+    @store      = ProjectFs.store(project_id, branch: branch)
     @stats      = { dirs: 0, files: 0, skipped: 0, existing: 0 }
   end
 

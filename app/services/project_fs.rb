@@ -22,8 +22,9 @@ module ProjectFs
   # docs/dbfs_v2/decisions.md #26.
   MAX_FILE_SIZE = 5 * 1024 * 1024
 
-  def store(project_id)
-    DbfsV2::Store.new(project_id)
+  # `branch:` binds the store to a project branch (DbfsV2::BranchView).
+  def store(project_id, branch: nil)
+    DbfsV2::Store.new(project_id).for_branch(branch || Branch::MAIN)
   end
 
   # The project's working tree on the PVC. Same resolution the worker has

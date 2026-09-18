@@ -54,19 +54,25 @@ module DbfsV2
     end
 
     # Flush every text file + symlink in the project. Binaries are skipped.
+    # Walks the store's live tree, so it is whatever branch the store is bound to.
     def flush_all
       written = 0
-      FileNode.where(project_id: @store.project_id).each do |node|
-        next if node.path == '/'
-        if node.symlink?
-          flush_symlink(node.path)
-        elsif node.ftype == 'file' && node.binary?
-          next # binary: not flushed (see class comment)
-        else
-          flush_file(node.path)
+      walk = lambda do |n|
+        (n[:children] || []).each do |c|
+          if c[:symlink]
+            flush_symlink(c[:path])
+            written += 1
+          elsif c[:type] == 'folder'
+            flush_file(c[:path])
+            written += 1
+            walk.call(c)
+          elsif !c[:binary]
+            flush_file(c[:path])
+            written += 1
+          end
         end
-        written += 1
       end
+      walk.call(@store.tree('/'))
       written
     end
 

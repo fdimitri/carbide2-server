@@ -306,6 +306,16 @@ module DbfsV2
       end
     end
 
+    # [file_node_id, path, head] for the branch's live text files (Store#text_heads).
+    def text_heads(node_ids: nil)
+      scope = live_entries.where(ftype: 'file').joins(:file_node)
+                          .where(file_nodes: { binary: false, symlink_target: nil })
+      scope = scope.where(file_node_id: node_ids) if node_ids
+      scope.left_joins(:content_branch)
+           .pluck('branch_entries.file_node_id', 'branch_entries.path', 'branches.head_revision_id', 'branch_entries.revision_id')
+           .map { |id, path, head, pin| [id, path, head || pin] }
+    end
+
     # Content pointer for ProjectState / merges: [branch_name_or_nil, revision_id].
     def content_of(node)
       e = node.entry

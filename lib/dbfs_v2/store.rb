@@ -548,6 +548,23 @@ module DbfsV2
                                user_id: user_id)
     end
 
+    # This store bound to one project branch (BranchView): main gives self.
+    def for_branch(name)
+      name.to_s == Branch::MAIN ? self : BranchView.new(self, name)
+    end
+
+    # [file_node_id, path, head_revision_id] for every live, non-symlink text
+    # file `branch` has — what a flusher mirrors to disk. On a project branch
+    # a file it has not written has its pin as head. `node_ids` narrows it.
+    def text_heads(branch: Branch::MAIN, node_ids: nil)
+      fs = branch_fs(branch)
+      return fs.text_heads(node_ids: node_ids) if fs
+      scope = FileNode.live.where(project_id: @project_id, ftype: 'file', binary: false, symlink_target: nil)
+      scope = scope.where(id: node_ids) if node_ids
+      scope.joins(:branches).where(branches: { name: Branch::MAIN })
+           .pluck('file_nodes.id', 'file_nodes.path', 'branches.head_revision_id')
+    end
+
     # The project's branches as a rail graph (ProjectGraph.build).
     def project_graph(gap_ms: nil)
       ProjectGraph.build(self, gap_ms: gap_ms)
