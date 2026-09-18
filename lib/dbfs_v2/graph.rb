@@ -89,10 +89,12 @@ module DbfsV2
       node = store.find(path)
       raise "no such file: #{path}" unless node
 
-      branch_rows = node.branches.to_a
+      # all_branches: a revision committed on a since-deleted branch keeps its
+      # label; only live branches contribute heads.
+      branch_rows = node.all_branches.to_a
       name_of     = branch_rows.to_h { |b| [b.id, b.name] }
       auto_ids    = branch_rows.select { |b| b.name.start_with?(AUTO_PREFIX) }.map(&:id).to_set
-      head_ids    = branch_rows.filter_map(&:head_revision_id).to_set
+      head_ids    = branch_rows.reject(&:deleted?).filter_map(&:head_revision_id).to_set
 
       cols = %i[id parent_id second_parent_id change_type branch_id user_id timestamp]
       revs = node.revisions.order(:timestamp, :id).pluck(*cols).map { |r| cols.zip(r).to_h }

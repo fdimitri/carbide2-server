@@ -8,6 +8,10 @@ class Revision < ApplicationRecord
   belongs_to :branch
 
   before_validation :assign_id, on: :create
+  # ADR-042: every revision takes the project clock's next value inside its own
+  # insert transaction, so `seq` order is commit order across the whole
+  # project. Done here, not at the four call sites, so none can forget.
+  before_create :stamp_seq
 
   # The single source of truth for change types and their payload shape.
   CHANGE_TYPES = %w[
@@ -41,5 +45,11 @@ class Revision < ApplicationRecord
 
   def assign_id
     self.id ||= SecureRandom.uuid
+  end
+
+  def stamp_seq
+    self.project_id ||= FileNode.where(id: file_node_id).pick(:project_id)
+    return if seq.to_i.positive? # a caller that already ticked (a multi-row operation)
+    self.seq = DbfsV2::Clock.tick!(project_id)
   end
 end

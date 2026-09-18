@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_15_000000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_18_000000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -110,13 +110,25 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_15_000000) do
     t.datetime "updated_at", null: false
   end
 
+  create_table "branch_heads", force: :cascade do |t|
+    t.uuid "branch_id", null: false
+    t.datetime "created_at", null: false
+    t.uuid "revision_id", null: false
+    t.bigint "seq", null: false
+    t.index ["branch_id", "seq"], name: "index_branch_heads_on_branch_id_and_seq"
+  end
+
   create_table "branches", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.datetime "created_at", null: false
+    t.datetime "deleted_at"
+    t.bigint "deleted_seq"
     t.uuid "file_node_id", null: false
     t.uuid "head_revision_id"
     t.string "name", null: false
+    t.uuid "origin_revision_id"
+    t.bigint "seq", default: 0, null: false
     t.datetime "updated_at", null: false
-    t.index ["file_node_id", "name"], name: "index_branches_on_file_node_id_and_name", unique: true
+    t.index ["file_node_id", "name"], name: "index_branches_on_file_node_id_and_name_live", unique: true, where: "(deleted_at IS NULL)"
     t.index ["file_node_id"], name: "index_branches_on_file_node_id"
   end
 
@@ -159,6 +171,20 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_15_000000) do
     t.index ["user_id"], name: "index_chat_messages_on_user_id"
   end
 
+  create_table "file_events", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.uuid "file_node_id", null: false
+    t.string "from_path"
+    t.string "ftype", default: "file", null: false
+    t.string "kind", null: false
+    t.string "path", null: false
+    t.bigint "project_id", null: false
+    t.bigint "seq", null: false
+    t.bigint "user_id"
+    t.index ["file_node_id", "seq"], name: "index_file_events_on_file_node_id_and_seq"
+    t.index ["project_id", "seq"], name: "index_file_events_on_project_id_and_seq"
+  end
+
   create_table "file_nodes", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.boolean "binary", default: false, null: false
     t.datetime "created_at", null: false
@@ -192,6 +218,12 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_15_000000) do
     t.index ["file_node_id", "revision_id"], name: "index_keyframes_on_file_node_id_and_revision_id", unique: true
   end
 
+  create_table "project_clocks", id: false, force: :cascade do |t|
+    t.bigint "project_id", null: false
+    t.bigint "seq", default: 0, null: false
+    t.index ["project_id"], name: "index_project_clocks_on_project_id", unique: true
+  end
+
   create_table "project_memberships", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.bigint "project_id", null: false
@@ -218,6 +250,18 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_15_000000) do
     t.index ["project_id"], name: "index_project_settings_on_project_id", unique: true
   end
 
+  create_table "project_snapshots", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.text "branch_set", null: false
+    t.datetime "created_at", null: false
+    t.text "manifest", null: false
+    t.string "name", null: false
+    t.bigint "project_id", null: false
+    t.bigint "seq", null: false
+    t.bigint "user_id"
+    t.index ["project_id", "name"], name: "index_project_snapshots_on_project_id_and_name", unique: true
+    t.index ["project_id", "seq"], name: "index_project_snapshots_on_project_id_and_seq"
+  end
+
   create_table "projects", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.text "description"
@@ -236,12 +280,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_15_000000) do
     t.uuid "file_node_id", null: false
     t.uuid "parent_id"
     t.string "priority"
+    t.bigint "project_id"
     t.uuid "second_parent_id"
+    t.bigint "seq", default: 0, null: false
     t.datetime "timestamp", null: false
     t.bigint "user_id"
+    t.index ["branch_id", "seq"], name: "index_revisions_on_branch_id_and_seq"
     t.index ["branch_id"], name: "index_revisions_on_branch_id"
     t.index ["file_node_id"], name: "index_revisions_on_file_node_id"
     t.index ["parent_id"], name: "index_revisions_on_parent_id"
+    t.index ["project_id", "seq"], name: "index_revisions_on_project_id_and_seq"
     t.index ["second_parent_id"], name: "index_revisions_on_second_parent_id"
   end
 
@@ -298,6 +346,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_15_000000) do
   add_foreign_key "agent_turn_usages", "agent_conversations"
   add_foreign_key "agent_turn_usages", "agent_messages"
   add_foreign_key "agent_turns", "agent_conversations"
+  add_foreign_key "branch_heads", "branches", on_delete: :cascade
   add_foreign_key "branches", "file_nodes", on_delete: :cascade
   add_foreign_key "browser_sessions", "browser_sessions", column: "forked_from_id"
   add_foreign_key "browser_sessions", "projects"
@@ -305,11 +354,15 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_15_000000) do
   add_foreign_key "chat_channels", "projects"
   add_foreign_key "chat_messages", "chat_channels"
   add_foreign_key "chat_messages", "users"
+  add_foreign_key "file_events", "file_nodes", on_delete: :cascade
+  add_foreign_key "file_events", "projects", on_delete: :cascade
   add_foreign_key "file_nodes", "projects", on_delete: :cascade
   add_foreign_key "keyframes", "file_nodes", on_delete: :cascade
+  add_foreign_key "project_clocks", "projects", on_delete: :cascade
   add_foreign_key "project_memberships", "projects"
   add_foreign_key "project_memberships", "users"
   add_foreign_key "project_settings", "projects"
+  add_foreign_key "project_snapshots", "projects", on_delete: :cascade
   add_foreign_key "revisions", "branches", on_delete: :cascade
   add_foreign_key "revisions", "file_nodes", on_delete: :cascade
   add_foreign_key "terminal_recordings", "projects"

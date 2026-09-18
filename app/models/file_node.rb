@@ -2,8 +2,14 @@
 class FileNode < ApplicationRecord
   self.primary_key = 'id'
 
-  has_many :branches, dependent: :destroy
+  # `branches` is the live set — what every name lookup wants. Tombstoned
+  # branches (ADR-042) stay reachable through `all_branches` for history
+  # rendering, where a revision committed on a since-deleted branch still
+  # needs its label.
+  has_many :branches, -> { where(deleted_at: nil) }, dependent: :destroy
+  has_many :all_branches, class_name: 'Branch', dependent: :destroy
   has_many :revisions, dependent: :destroy
+  has_many :file_events, dependent: :destroy
   has_many :keyframes, dependent: :destroy
   belongs_to :parent, class_name: 'FileNode', foreign_key: 'parent_id', optional: true
   has_many :children, class_name: 'FileNode', foreign_key: 'parent_id', dependent: :destroy
