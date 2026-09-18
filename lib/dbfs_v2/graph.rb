@@ -172,6 +172,7 @@ module DbfsV2
       end
 
       heads = branch_rows.sort_by(&:name).filter_map do |b|
+        next if b.deleted?
         next if !auto && auto_ids.include?(b.id)
         next unless b.head_revision_id
         { branch: b.name, revision: b.head_revision_id }

@@ -186,6 +186,10 @@ class ProjectStateTest < Minitest::Test
     assert_equal "a\nb", @s.state(seq: on_feat, branch_set: 'feat').read('/f')
     # ... and one after it falls back to main.
     assert_equal 'main', @s.state(branch_set: 'feat')['/f'].branch
+    # The history graph keeps the label on feat's revisions but drops its head.
+    condensed = @s.dag_condensed('/f')
+    assert_equal ['main'], condensed[:heads].map { |h| h[:branch] }
+    assert_includes condensed[:nodes].map { |n| n[:branch] }, 'feat'
 
     again = @s.branch('/f', 'feat')
     refute again.deleted?
