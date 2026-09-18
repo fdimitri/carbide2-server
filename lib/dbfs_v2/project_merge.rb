@@ -40,7 +40,7 @@ module DbfsV2
 
     # Returns
     #   { merged: true/false, dry_run:, source:, target:, base_seq:, seq:,
-    #     actions: [{ kind: 'move'|'delete'|'add'|'content', ... }],
+    #     actions: [{ id: node_id, kind: 'move'|'delete'|'add'|'content', ... }],
     #     conflicts: [{ id, kind, ours: {path, revision_id}, theirs: {...}, detail }] }
     def branches(store, source:, target: Branch::MAIN, resolutions: {}, user_id: nil, dry_run: false)
       src = pb!(store, source)
@@ -63,7 +63,7 @@ module DbfsV2
       plan, conflicts = plan(base.entries, ours.entries, thrs.entries, resolutions)
       result = { merged: false, dry_run: dry_run, source: src.name, target: tgt.name,
                  base: { branch: base_branch.name, seq: base_seq }, seq: now,
-                 actions: plan.map { |a| a.except(:node) }, conflicts: conflicts.map(&:to_h) }
+                 actions: plan.map { |a| wire(a) }, conflicts: conflicts.map(&:to_h) }
       return result unless conflicts.empty?
 
       applied = []
@@ -74,7 +74,7 @@ module DbfsV2
         # is the next base.
         child.update_columns(base_seq: store.seq, base_branch_id: src.id, updated_at: Time.current)
       end
-      result[:actions]   = applied.map { |a| a.except(:node) }
+      result[:actions]   = applied.map { |a| wire(a) }
       result[:conflicts] = conflicts.map(&:to_h)
       result[:merged]    = conflicts.empty? && !dry_run
       result[:seq]       = store.seq
@@ -161,6 +161,8 @@ module DbfsV2
       end
       [actions, conflicts]
     end
+
+    def wire(a) = a.except(:node).merge(id: a[:node])
 
     def existence(b, x)
       return :same    if b.nil? && x.nil?
