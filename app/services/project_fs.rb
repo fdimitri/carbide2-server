@@ -227,30 +227,35 @@ module ProjectFs
   # Auto-branches are never deleted: revisions.branch_id cascades, so dropping
   # the branch row would drop the batch as authored.
   def write_batch!(store, path, deltas, base_revision_id: nil, user_id: nil, branch: Branch::MAIN)
-    node = store.resolve(path) or raise "no such file: #{path}"
-    head = node.branches.find_by!(name: branch).head_revision_id
-    return BatchResult.new(target: branch, mode: :blind, revisions: [], head: head, old_head: head) if deltas.empty?
+    # The node as `branch` sees it (a project branch's index, or main's), and
+    # the per-file branch its content lives under — created at the pinned
+    # revision if this is the project branch's first write to the file.
+    node, bname = store.locate(path, branch, for_write: true)
+    raise "no such file: #{path}" unless node
+    node = node.resolve || node
+    head = node.branches.find_by!(name: bname).head_revision_id
+    return BatchResult.new(target: bname, mode: :blind, revisions: [], head: head, old_head: head) if deltas.empty?
 
     if base_revision_id.nil?
-      revs = ActiveRecord::Base.transaction { deltas.flat_map { |d| store.write(path, d, branch: branch, user_id: user_id) } }
-      return BatchResult.new(target: branch, mode: :blind, revisions: revs, head: revs.last.id, old_head: revs.first.parent_id)
+      revs = ActiveRecord::Base.transaction { deltas.flat_map { |d| store.write_at(node, bname, d, user_id: user_id) } }
+      return BatchResult.new(target: bname, mode: :blind, revisions: revs, head: revs.last.id, old_head: revs.first.parent_id)
     end
 
     if base_revision_id == head
-      revs = append_anchored(store, path, deltas, base_revision_id, user_id, branch)
-      return BatchResult.new(target: branch, mode: :append, revisions: revs, head: revs.last.id, old_head: base_revision_id) if revs
+      revs = append_anchored(store, node, deltas, base_revision_id, user_id, bname)
+      return BatchResult.new(target: bname, mode: :append, revisions: revs, head: revs.last.id, old_head: base_revision_id) if revs
     end
 
-    auto_branch_and_rebase!(store, node, path, deltas, base_revision_id, user_id, branch)
+    auto_branch_and_rebase!(store, node, path, deltas, base_revision_id, user_id, bname)
   end
 
   # The deltas chained from `anchor` on `branch`, in one transaction. nil (and
   # nothing committed) if the head moved first and a delta had to be transformed.
-  def append_anchored(store, path, deltas, anchor, user_id, branch)
+  def append_anchored(store, node, deltas, anchor, user_id, branch)
     moved = Class.new(StandardError)
     ActiveRecord::Base.transaction do
       deltas.flat_map do |delta|
-        revs = store.write(path, delta, base_revision_id: anchor, branch: branch, user_id: user_id)
+        revs = store.write_at(node, branch, delta, base_revision_id: anchor, user_id: user_id)
         raise moved if revs.first.parent_id != anchor
 
         anchor = revs.last.id
@@ -268,9 +273,9 @@ module ProjectFs
     end
 
     name = "#{AUTO_BRANCH_PREFIX}#{user_id || 'system'}/#{Time.now.utc.strftime('%Y%m%dT%H%M%S%L')}-#{SecureRandom.hex(3)}"
-    store.branch(path, name, at_revision: base)
+    store.branch_at(node, name, at_revision: base)
     authored = ActiveRecord::Base.transaction do
-      deltas.flat_map { |d| store.write(path, d, branch: name, user_id: user_id) }
+      deltas.flat_map { |d| store.write_at(node, name, d, user_id: user_id) }
     end
     branch_head = authored.last.id
 
@@ -340,8 +345,13 @@ module ProjectFs
     DbfsV2::DocumentCache.content_at(node.id, branch, revision_id) || DbfsV2::Content.at(node, revision_id)
   end
 
+  # A node found through a project branch's index (BranchFs::Node) that the
+  # branch has not written yet has no per-file row: its head is the pin.
   def head_revision_id(node, branch = Branch::MAIN)
     node = node.resolve || node
+    if node.respond_to?(:entry) && node.entry.content_branch_id.nil? && node.entry.project_branch&.name == branch
+      return node.entry.revision_id
+    end
     node.branches.find_by(name: branch)&.head_revision_id
   end
 end

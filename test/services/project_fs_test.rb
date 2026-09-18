@@ -150,6 +150,36 @@ class ProjectFsTest < Minitest::Test
     end
   end
 
+  # The wire's `branch` is a project branch here: the node comes from its
+  # index, the first batch forks the file's content row at the pin, a stale
+  # batch rebases on that row, and a file only the branch has is writable.
+  def test_batch_on_a_project_branch
+    @s.create_file('/f', content: "abc\n")
+    main = head(@s, '/f')
+    @s.create_project_branch('feature')
+    @s.write('/f', ins(0, 0, 'M'))                                  # main moves on after the fork
+
+    node = @s.find('/f', branch: 'feature')
+    assert_equal main, ProjectFs.head_revision_id(node, 'feature'), 'pinned head before any write'
+    r = ProjectFs.write_batch!(@s, '/f', [ins(0, 3, 'd')], base_revision_id: main, branch: 'feature')
+    assert_equal :append, r.mode
+    assert_equal 'feature', r.target
+    assert_equal "abcd\n", @s.read('/f', branch: 'feature')
+    assert_equal "Mabc\n", @s.read('/f')
+    assert_equal @s.project_branch('feature').id, @s.find('/f').branches.find_by!(name: 'feature').project_branch_id
+
+    @s.write('/f', ins(0, 0, 'X'), branch: 'feature')
+    r2 = ProjectFs.write_batch!(@s, '/f', [ins(0, 4, 'e')], base_revision_id: r.head, branch: 'feature')
+    assert_equal :rebased, r2.mode
+    assert_equal "Xabcde\n", @s.read('/f', branch: 'feature')
+
+    @s.create_file('/only.txt', content: "o\n", branch: 'feature')
+    r3 = ProjectFs.write_batch!(@s, '/only.txt', [ins(0, 1, 'k')], branch: 'feature')
+    assert_equal :blind, r3.mode
+    assert_equal "ok\n", @s.read('/only.txt', branch: 'feature')
+    assert_nil @s.find('/only.txt')
+  end
+
   def apply_specs(text, specs)
     buf = DbfsV2::Buffer.new(text)
     specs.each { |c| buf.apply(DbfsV2::Delta.parse(c[:change_type], c[:change_data])) }

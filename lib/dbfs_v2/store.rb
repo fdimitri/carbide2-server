@@ -271,6 +271,17 @@ module DbfsV2
       write_node(node, b, delta, base_revision_id: base_revision_id, user_id: user_id, priority: priority)
     end
 
+    # write() for a node already in hand (from locate, a branch index, or a
+    # rebase/merge): no path re-resolution, so it works for a node whichever
+    # project branch it was found through.
+    def write_at(node, branch_name, delta, base_revision_id: nil, user_id: nil, priority: nil)
+      raise "not a file: #{node.path}" unless node.ftype == 'file'
+      raise "binary file: use write_blob" if node.binary?
+      delta = delta.is_a?(Delta) ? delta : Delta.parse(delta['type'] || delta[:type], delta['change_data'] || delta['data'] || delta)
+      b = node.branches.find_by!(name: branch_name)
+      write_node(node, b, delta, base_revision_id: base_revision_id, user_id: user_id, priority: priority)
+    end
+
     # The OT write path on a resolved node and its per-file branch row.
     def write_node(node, b, delta, base_revision_id: nil, user_id: nil, priority: nil)
       delta.priority = priority if priority
@@ -350,6 +361,12 @@ module DbfsV2
     def branch(path, name, from: Branch::MAIN, at_revision: nil, branch: Branch::MAIN)
       node, = locate(path, branch, for_write: true)
       raise "no such file: #{path}" unless node
+      branch_at(node, name, from: from, at_revision: at_revision)
+    end
+
+    # branch() for a node already in hand.
+    def branch_at(node, name, from: Branch::MAIN, at_revision: nil)
+      path = node.path
       head =
         if at_revision
           raise ActiveRecord::RecordNotFound, "revision #{at_revision} is not a revision of #{path}" unless

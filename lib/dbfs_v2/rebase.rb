@@ -45,7 +45,7 @@ module DbfsV2
         out << Delta.new('insertDataSingleLine', { startLine: 0, startChar: 0, data: '' }) if out.empty?
 
         revs = out.map do |d|
-          store.write(node.path, d, base_revision_id: locked.reload.head_revision_id, branch: branch, user_id: user_id)
+          store.write_at(node, branch, d, base_revision_id: locked.reload.head_revision_id, user_id: user_id)
         end.flatten
         last = revs.last
         last.update_columns(second_parent_id: source_head_id, bridge: res[:bridge].to_json)
