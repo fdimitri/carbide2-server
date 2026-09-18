@@ -414,7 +414,8 @@ module DbfsV2
     # `expected_head` pins the target head the caller resolved against; if the
     # target advanced since, a user-resolved merge is refused rather than
     # recording a commit whose parent silently skipped the concurrent write.
-    def merge(path, target:, source:, resolved: nil, user_id: nil, auto: false, expected_head: nil)
+    def merge(path, target:, source:, resolved: nil, user_id: nil, auto: false, expected_head: nil,
+              expected_source_head: nil)
       node = resolve(path) || find(path)
       raise "no such file: #{path}" unless node
       if auto
@@ -424,8 +425,18 @@ module DbfsV2
       else
         Merge.merge_commit!(node, target_name: target, source_name: source,
                            resolved_content: resolved, user_id: user_id,
-                           expected_target_head: expected_head)
+                           expected_target_head: expected_head,
+                           expected_source_head: expected_source_head)
       end
+    end
+
+    # The three-way view a human resolves in: base/ours/theirs with their
+    # revisions, the refused regions, and a diff3 text to start from. See
+    # Merge.preview.
+    def merge_preview(path, target:, source:)
+      node = resolve(path) || find(path)
+      raise "no such file: #{path}" unless node
+      Merge.preview(node, target_name: target, source_name: source)
     end
 
     # Report whether auto-merging `source` into `target` would produce write

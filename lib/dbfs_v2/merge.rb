@@ -51,11 +51,18 @@ module DbfsV2
       { merged: true, head: source.head_revision_id }
     end
 
-    def merge_commit!(file_node, target_name:, source_name:, resolved_content:, user_id: nil, expected_target_head: nil)
+    def merge_commit!(file_node, target_name:, source_name:, resolved_content:, user_id: nil,
+                      expected_target_head: nil, expected_source_head: nil)
       target = file_node.branches.find_by!(name: target_name)
       source = file_node.branches.find_by!(name: source_name)
       raise 'source has no head' unless source.head_revision_id
       raise 'target has no head' unless target.head_revision_id
+      # The human resolved against a particular source head too; if the source
+      # moved since, the recorded second parent would claim edits the
+      # resolution never saw. Refuse, so the caller re-previews.
+      if expected_source_head && expected_source_head != source.head_revision_id
+        raise ConflictError, "source branch '#{source_name}' advanced while resolving; re-resolve"
+      end
 
       # The target head the resolved bytes were produced against: the caller's
       # pinned revision, or the head we read now. If a write lands on the target
@@ -321,6 +328,44 @@ module DbfsV2
       return { merged: false, reason: 'target advanced concurrently; re-check' } if aborted
 
       result
+    end
+
+    # Everything a human needs to resolve source into target: the three
+    # contents and their revisions, the conflict regions the auto-merge
+    # refused on, and a line-based diff3 with markers (Diff3) to start from.
+    # `clean` means merge_auto would succeed; `merged` is then its exact
+    # result, so a review-before-merge shows what will be committed.
+    def preview(file_node, target_name:, source_name:)
+      target = file_node.branches.find_by!(name: target_name)
+      source = file_node.branches.find_by!(name: source_name)
+      raise 'source has no head' unless source.head_revision_id
+      t_head, s_head = target.head_revision_id, source.head_revision_id
+      base_id = t_head ? lowest_common_ancestor(file_node, t_head, s_head) : nil
+      base    = base_id ? Content.at(file_node, base_id) : ''
+      ours    = t_head ? Content.at(file_node, t_head) : ''
+      theirs  = Content.at(file_node, s_head)
+
+      regions = t_head ? conflicts(file_node, t_head, s_head) : []
+      auto    = nil
+      if regions.empty? && t_head
+        begin
+          auto = auto_merge_content(file_node, t_head, s_head)
+        rescue ConflictError
+          auto = nil
+        end
+      elsif t_head.nil?
+        auto = theirs
+      end
+      # Clean: what merge_auto will commit, no markers. Otherwise the diff3
+      # text with markers and its blocks.
+      d3 = auto ? { text: auto, conflicts: 0, blocks: [] } : Diff3.merge(base, ours, theirs, labels: [target_name, source_name])
+      {
+        target: target_name, source: source_name,
+        base_revision: base_id, target_head: t_head, source_head: s_head,
+        base: base, ours: ours, theirs: theirs,
+        clean: !auto.nil?, conflicts: regions,
+        merged: d3[:text], conflict_blocks: d3[:blocks].map(&:to_h), conflict_count: d3[:conflicts]
+      }
     end
 
     # Merged content, using a real three-way merge at the DAG base: diff the
