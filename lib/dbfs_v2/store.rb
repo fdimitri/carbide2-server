@@ -327,6 +327,12 @@ module DbfsV2
       Graph.dump(self, path)
     end
 
+    # The DAG condensed for display: linear runs of keystrokes collapsed into
+    # one node each, auto-branches folded unless `auto:`. See Graph.condense.
+    def dag_condensed(path, gap_ms: nil, auto: false)
+      Graph.condense(self, path, gap_ms: gap_ms, auto: auto)
+    end
+
     # Graphviz DOT for `dot -Tsvg`. Merge-commit second parents are dashed.
     def dag_dot(path)
       Graph.to_dot(self, path)
