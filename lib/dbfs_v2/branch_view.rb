@@ -9,7 +9,7 @@ module DbfsV2
   # a `branch:` the caller passes is replaced, not honoured.
   class BranchView
     BRANCHED = %i[
-      find find_any resolve stat list tree
+      find find_id find_any resolve stat list tree
       create_file create_folder create_symlink delete restore move adopt!
       read write write_blob commit_blob head_blob_digest text_heads
       merge merge_preview branch branches delete_branch dag dag_condensed

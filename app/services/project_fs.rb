@@ -299,18 +299,18 @@ module ProjectFs
   # change_data is the JSON string the client's applyRemoteChange parses.
   # `revision` is the revision UUID; `parent` the revision it applies on top of,
   # so a client can tell whether a frame follows the state it holds.
-  def revision_frame(path, rev, user_id:, branch: Branch::MAIN)
+  def revision_frame(path, rev, user_id:, branch: Branch::MAIN, node: nil)
+    frame = { path: path, branch: branch, revision: rev.id, parent: rev.parent_id, user_id: user_id }
+    frame[:id] = node.id if node.respond_to?(:id)
     if rev.change_type == 'setContents'
-      ['set_contents', { path: path, branch: branch, content: rev.payload['data'].to_s, revision: rev.id,
-                         parent: rev.parent_id, user_id: user_id }]
+      ['set_contents', frame.merge(content: rev.payload['data'].to_s)]
     else
       p = rev.payload
-      ['change', {
-        path: path, branch: branch, change_type: rev.change_type, change_data: rev.change_data,
+      ['change', frame.merge(
+        change_type: rev.change_type, change_data: rev.change_data,
         start_line: p['startLine'], start_char: p['startChar'],
-        end_line: p['endLine'], end_char: p['endChar'],
-        revision: rev.id, parent: rev.parent_id, user_id: user_id
-      }]
+        end_line: p['endLine'], end_char: p['endChar']
+      )]
     end
   end
 
@@ -320,9 +320,10 @@ module ProjectFs
 
   # What the batch's author is told (fs/written). `branch` is the branch written
   # to; a rebase also names the auto-branch holding the batch as authored.
-  def batch_ack(path, result, _node = nil)
+  def batch_ack(path, result, node = nil)
     ack = { path: path, branch: result.target, mode: result.mode.to_s,
             revisions: result.revisions.map(&:id), head: result.head }
+    ack[:id] = node.id if node.respond_to?(:id)
     if result.mode == :rebased
       # The author's editor holds base + its own batch (= auto_branch_head);
       # `changes` takes it to `head`.
@@ -335,8 +336,8 @@ module ProjectFs
 
   # What everyone else with the file open on that branch is sent: one frame per
   # revision that landed, each chained to the one before by `parent`.
-  def batch_peer_frames(path, result, _node = nil, user_id:)
-    result.revisions.map { |r| revision_frame(path, r, user_id: user_id, branch: result.target) }
+  def batch_peer_frames(path, result, node = nil, user_id:)
+    result.revisions.map { |r| revision_frame(path, r, user_id: user_id, branch: result.target, node: node) }
   end
 
   # Text content at an exact revision: from the live cache when it is at that

@@ -131,7 +131,11 @@ module DbfsV2
 
     # This branch's view of a node found some other way (main's path, a merge).
     def find_by_node(node)
-      e = live_entries.find_by(file_node_id: node.id)
+      find_by_id(node.id)
+    end
+
+    def find_by_id(id)
+      e = live_entries.find_by(file_node_id: id)
       e && wrap(e)
     end
 

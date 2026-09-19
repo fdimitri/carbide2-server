@@ -92,6 +92,15 @@ module DbfsV2
       FileNode.live.find_by(project_id: @project_id, path: normalize(path))
     end
 
+    # FileNode UUID is identity: stable across rename/move on a branch (only
+    # the path columns change). Path is location.
+    def find_id(id, branch: Branch::MAIN)
+      return nil if id.blank?
+      fs = branch_fs(branch)
+      return fs.find_by_id(id) if fs
+      FileNode.live.find_by(project_id: @project_id, id: id)
+    end
+
     # Includes tombstoned nodes. Internal (resurrect-on-create); exposed for
     # tests/tools that need to see a soft-deleted path.
     def find_any(path, branch: Branch::MAIN)

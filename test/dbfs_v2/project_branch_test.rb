@@ -84,7 +84,11 @@ class ProjectBranchTest < Minitest::Test
     assert_equal "readme\n", @s.read('/README', branch: 'feature')
     assert_equal paths(@s.tree('/', branch: 'feature')) - ['/'], state_paths('feature')
     # Same identity across the rename, so history is the file's.
-    assert_equal @s.find('/lib/a.rb').id, @s.find('/lib/renamed.rb', branch: 'feature').id
+    id = @s.find('/lib/a.rb').id
+    assert_equal id, @s.find('/lib/renamed.rb', branch: 'feature').id
+    found = @s.find_id(id, branch: 'feature')
+    assert_equal '/lib/renamed.rb', found.path
+    assert_equal id, found.id
     assert_equal 3, FileEvent.where(project_branch_id: @s.project_branch('feature').id, kind: %w[renamed deleted restored]).count
   end
 
