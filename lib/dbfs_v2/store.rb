@@ -408,7 +408,7 @@ module DbfsV2
     # --- project branches (ADR-042) -----------------------------------------
 
     def main_branch
-      ProjectBranch.main_for(@project_id)
+      @main_branch ||= ProjectBranch.main_for(@project_id)
     end
 
     # The live project branch named `name`, or nil (main, or a name that is

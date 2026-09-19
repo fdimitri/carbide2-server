@@ -25,7 +25,11 @@ class ProjectBranch < ApplicationRecord
   scope :tombstoned, -> { where.not(deleted_at: nil) }
 
   def self.main_for(project_id)
-    live.find_or_create_by!(project_id: project_id, name: MAIN) { |b| b.seq = 0 }
+    live.find_by(project_id: project_id, name: MAIN) ||
+      live.find_or_create_by!(project_id: project_id, name: MAIN) { |b| b.seq = 0 }
+  rescue ActiveRecord::RecordNotUnique
+    # Two first-writers on a new project both tried to insert `main`.
+    live.find_by!(project_id: project_id, name: MAIN)
   end
 
   def main?    = name == MAIN && forked_from_id.nil?
