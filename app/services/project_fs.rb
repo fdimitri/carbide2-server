@@ -22,7 +22,8 @@ module ProjectFs
   # docs/dbfs_v2/decisions.md #26.
   MAX_FILE_SIZE = 5 * 1024 * 1024
 
-  # `branch:` binds the store to a project branch (DbfsV2::BranchView).
+  # `branch:` binds the store to a project branch (DbfsV2::BranchView). Main
+  # is the unbound Store (its methods take `branch:`).
   def store(project_id, branch: nil)
     DbfsV2::Store.new(project_id).for_branch(branch || Branch::MAIN)
   end
@@ -101,28 +102,13 @@ module ProjectFs
     nil
   end
 
-  # The explorer tree for a project, in one query. Wire shape is unchanged from
-  # DBFS v1: { id, name, path, type, binary, symlink, children } with children
-  # only on folders, folders first, then case-insensitive name. [] when the
-  # project has no root yet.
-  def tree_json(project_id)
-    cols = %i[id parent_id cur_name path ftype binary symlink_target]
-    rows = FileNode.live.where(project_id: project_id).pluck(*cols).map { |r| cols.zip(r).to_h }
-    root = rows.find { |r| r[:path] == '/' }
-    return [] unless root
-
-    by_parent = rows.group_by { |r| r[:parent_id] }
-    build = lambda do |r|
-      node = { id: r[:id], name: r[:cur_name], path: r[:path], type: r[:ftype],
-               binary: r[:binary], symlink: r[:symlink_target].present? }
-      if r[:ftype] == 'folder'
-        node[:children] = (by_parent[r[:id]] || [])
-          .sort_by { |c| [c[:ftype] == 'folder' ? 0 : 1, c[:cur_name].to_s.downcase] }
-          .map(&build)
-      end
-      node
-    end
-    build.call(root)
+  # The explorer tree for a project. Wire shape is unchanged from DBFS v1:
+  # { id, name, path, type, binary, symlink, children } with children only on
+  # folders, folders first, then case-insensitive name. [] when the project
+  # has no root yet.
+  def tree_json(project_id, branch: Branch::MAIN)
+    return [] unless FileNode.exists?(project_id: project_id, path: '/')
+    DbfsV2::Store.new(project_id).tree('/', branch: branch) || []
   end
 
   # The DBFS binary-write trigger (decisions #28): stage the bytes outside the

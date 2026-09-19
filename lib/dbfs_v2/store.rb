@@ -22,15 +22,20 @@ module DbfsV2
       if (fs = branch_fs(branch))
         return fs.create_file(path, content: content, owner: owner, group: group, mode: mode, user_id: user_id, binary: binary)
       end
-      p = normalize(path)
-      node = recreate_or_new(p, ftype: 'file', owner: owner, group: group, mode: mode,
-                                binary: binary, user_id: user_id)
-      # Create the requested branch (default 'main'); never rename an existing
-      # branch. A file created on 'foo' gets a 'foo' branch, not a renamed main.
-      b = node.branches.find_or_create_by!(name: branch) do |nb|
-        nb.project_branch_id = main_branch.id if branch == Branch::MAIN
+      # Detached per-file branch name: the path lives on main; content is seeded
+      # on `branch` only (no 'main' content row).
+      fs = branch_fs(Branch::MAIN)
+      p = fs.send(:norm, path)
+      node = nil
+      ActiveRecord::Base.transaction do
+        fs.send(:ensure_dir!, File.dirname(p), user_id: user_id)
+        node = fs.send(:place!, p, ftype: 'file', owner: owner, group: group, mode: mode,
+                       binary: binary, user_id: user_id)
+        if content && !content.empty?
+          b = node.record.branches.find_or_create_by!(name: branch)
+          seed_content!(node.record, b, content, binary: binary, user_id: user_id)
+        end
       end
-      seed_content!(node, b, content, binary: binary, user_id: user_id) if content && !content.empty?
       node
     end
 
@@ -44,69 +49,31 @@ module DbfsV2
     end
 
     def create_folder(path, owner: nil, group: nil, mode: 0o755, user_id: nil, branch: Branch::MAIN)
-      if (fs = branch_fs(branch))
-        return fs.create_folder(path, owner: owner, group: group, mode: mode, user_id: user_id)
-      end
-      p = normalize(path)
-      return ensure_root!(user_id: user_id) if p == '/'
-      recreate_or_new(p, ftype: 'folder', owner: owner, group: group, mode: mode, user_id: user_id)
+      (branch_fs(branch) || branch_fs(Branch::MAIN))
+        .create_folder(path, owner: owner, group: group, mode: mode, user_id: user_id)
     end
 
     # Symlink: stores a normalized target DBFS path (ADR-026). The node's ftype
     # stays file/folder; writes/reads resolve through the target.
     def create_symlink(path, target, user_id: nil, branch: Branch::MAIN)
-      fs = branch_fs(branch)
-      return fs.create_symlink(path, target, user_id: user_id) if fs
-      p = normalize(path)
-      node = find_any(p)
-      if node&.deleted?
-        FileNode.transaction do
-          node.update_columns(deleted_at: nil, symlink_target: normalize(target),
-                              mtime: Time.current, updated_at: Time.current)
-          Events.record_node!(@project_id, :created, node.reload, user_id: user_id)
-        end
-        return node
-      end
-      # mkdir -p before the transaction: its RecordNotUnique recovery must not
-      # run inside a Postgres transaction it would abort.
-      parent_id = ensure_dir!(File.dirname(p), user_id: user_id).id
-      FileNode.transaction do
-        n = FileNode.create!(
-          project_id: @project_id,
-          path: p,
-          ftype: 'file',
-          owner: default_owner,
-          posix_mode: 0o777,
-          symlink_target: normalize(target),
-          created_by: user_id,
-          parent_id: parent_id
-        )
-        Events.record_node!(@project_id, :created, n, user_id: user_id)
-        n
-      end
+      (branch_fs(branch) || branch_fs(Branch::MAIN)).create_symlink(path, target, user_id: user_id)
     end
 
     def find(path, branch: Branch::MAIN)
-      fs = branch_fs(branch)
-      return fs.find(path) if fs
-      FileNode.live.find_by(project_id: @project_id, path: normalize(path))
+      (branch_fs(branch) || branch_fs(Branch::MAIN)).find(path)
     end
 
     # FileNode UUID is identity: stable across rename/move on a branch (only
-    # the path columns change). Path is location.
+    # the entry's path changes). Path is location.
     def find_id(id, branch: Branch::MAIN)
       return nil if id.blank?
-      fs = branch_fs(branch)
-      return fs.find_by_id(id) if fs
-      FileNode.live.find_by(project_id: @project_id, id: id)
+      (branch_fs(branch) || branch_fs(Branch::MAIN)).find_by_id(id)
     end
 
-    # Includes tombstoned nodes. Internal (resurrect-on-create); exposed for
+    # Includes tombstoned entries. Internal (resurrect-on-create); exposed for
     # tests/tools that need to see a soft-deleted path.
     def find_any(path, branch: Branch::MAIN)
-      fs = branch_fs(branch)
-      return fs.find_any(path) if fs
-      FileNode.find_by(project_id: @project_id, path: normalize(path))
+      (branch_fs(branch) || branch_fs(Branch::MAIN)).find_any(path)
     end
 
     # Resolve a path to the concrete node it refers to (follows symlinks).
@@ -116,36 +83,19 @@ module DbfsV2
     end
 
     def stat(path, branch: Branch::MAIN)
-      fs = branch_fs(branch)
-      return fs.stat(path) if fs
-      node = find(path)
-      return nil unless node
-      target = node.resolve
-      node.stat_hash.merge(
-        symlink:        node.symlink?,
-        symlink_target: node.symlink_target,
-        resolved_path:  target&.path
-      )
+      (branch_fs(branch) || branch_fs(Branch::MAIN)).stat(path)
     end
 
     # Immediate children of `path`, using the parent_id tree edge (indexed).
     # `include_tombstoned: true` also returns soft-deleted children (for an
     # undelete UI); they are tagged `deleted_at`.
     def list(path = '/', include_tombstoned: false, branch: Branch::MAIN)
-      fs = branch_fs(branch)
-      return fs.list(path, include_tombstoned: include_tombstoned) if fs
-      parent = include_tombstoned ? find_any(path) : find(path)
-      return [] unless parent
-      children_scope(parent, include_tombstoned).order(:cur_name, :ftype)
+      (branch_fs(branch) || branch_fs(Branch::MAIN)).list(path, include_tombstoned: include_tombstoned)
     end
 
     # Recursive tree node (children nested), for an explorer tree view.
     def tree(path = '/', include_tombstoned: false, branch: Branch::MAIN)
-      fs = branch_fs(branch)
-      return fs.tree(path, include_tombstoned: include_tombstoned) if fs
-      node = include_tombstoned ? find_any(path) : find(path)
-      return nil unless node
-      build_tree(node, include_tombstoned: include_tombstoned)
+      (branch_fs(branch) || branch_fs(Branch::MAIN)).tree(path, include_tombstoned: include_tombstoned)
     end
 
     # Soft-delete: tombstone the node and its whole subtree. History is
@@ -153,41 +103,17 @@ module DbfsV2
     # (and can be restored, or resurrected by re-creating the same path). Never
     # cascades a destroy.
     def delete(path, user_id: nil, branch: Branch::MAIN)
-      fs = branch_fs(branch)
-      return fs.delete(path, user_id: user_id) if fs
-      node = find(path)
-      return nil unless node
-      raise 'cannot delete root' if node.root?
-
-      now = Time.current
-      FileNode.transaction do
-        # One operation, one seq: the subtree is gone at every cut >= it. Only
-        # nodes that were live get an event; an already-tombstoned descendant
-        # did not change.
-        rows = event_rows(FileNode.live.where(id: tombstone_ids(node)))
-        FileNode.where(id: tombstone_ids(node)).update_all(deleted_at: now, updated_at: now)
-        Events.record!(@project_id, :deleted, rows, user_id: user_id)
-      end
-      node.reload
+      (branch_fs(branch) || branch_fs(Branch::MAIN)).delete(path, user_id: user_id)
     end
 
-    # Undo a delete: clear the tombstone on the node and its subtree.
+    # Undo a delete: clear the tombstone on the entry and its subtree.
     def restore(path, user_id: nil, branch: Branch::MAIN)
-      fs = branch_fs(branch)
-      return fs.restore(path, user_id: user_id) if fs
-      node = find_any(path)
-      return nil unless node
-      FileNode.transaction do
-        rows = event_rows(FileNode.tombstoned.where(id: tombstone_ids(node)))
-        FileNode.where(id: tombstone_ids(node)).update_all(deleted_at: nil, updated_at: Time.current)
-        Events.record!(@project_id, :restored, rows, user_id: user_id)
-      end
-      node.reload
+      (branch_fs(branch) || branch_fs(Branch::MAIN)).restore(path, user_id: user_id)
     end
 
-    # True when the project has no live entries other than the root.
+    # True when main has no live entries other than the (implicit) root.
     def project_empty?
-      !FileNode.live.where(project_id: @project_id).where.not(path: '/').exists?
+      !main_branch.entries.live.exists?
     end
 
     # Symlink-aware: resolves the link, so a tombstoned target reads as gone.
@@ -196,70 +122,24 @@ module DbfsV2
     # dir by id). The DAG is never touched: revisions stay keyed to the same
     # file_node_id, so history survives the move.
     def move(from, to, user_id: nil, branch: Branch::MAIN)
-      fs = branch_fs(branch)
-      return fs.move(from, to, user_id: user_id) if fs
-      node = find(from)
-      raise "no such file: #{from}" unless node
-      raise 'cannot move root' if node.root?
-      to_path = normalize(to)
-      if node.ftype == 'folder' && (to_path == node.path || to_path.start_with?("#{node.path}/"))
-        raise "cannot move '#{from}' into itself"
-      end
-      # Refuse to clobber an existing destination. Checked INSIDE the
-      # transaction so a concurrent create at to_path between the check and the
-      # rewrite cannot slip through (TOCTOU).
-      new_parent = ensure_dir!(File.dirname(to_path), user_id: user_id)
-
-      FileNode.transaction do
-        collision = FileNode.where(project_id: @project_id, path: to_path).where.not(id: node.id).first
-        raise "destination already exists: #{to_path}" if collision
-
-        # Identity survives a move (same node id); what changes is recorded as
-        # one `renamed` event per affected node under one seq — the whole
-        # subtree is either moved or not at any cut. Captured before the
-        # rewrite so from_path is the old path.
-        renamed = FileNode.where(id: tombstone_ids(node)).pluck(:id, :path, :ftype).map do |id, old, ftype|
-          { file_node_id: id, from_path: old, ftype: ftype,
-            path: id == node.id ? to_path : "#{to_path}#{old.delete_prefix(node.path)}" }
-        end
-
-        if node.ftype == 'folder'
-          old_prefix = "#{node.path}/"
-          new_prefix = "#{to_path}/"
-          # Escape LIKE metacharacters in the literal prefix (%, _, and the
-          # escape char itself) so /foo%bar or /foo_bar don't match siblings,
-          # but keep the trailing '%' as the wildcard.
-          escaped_prefix = old_prefix.gsub('\\', '\\\\').gsub('%', '\\%').gsub('_', '\\_')
-          pattern = "#{escaped_prefix}%"
-          quoted = FileNode.connection.quote(new_prefix)
-          FileNode.where(project_id: @project_id)
-                  .where("path LIKE ? ESCAPE '\\'", pattern)
-                  .update_all("path = #{quoted} || substr(path, #{old_prefix.length + 1})")
-        end
-        node.update_columns(
-          path: to_path,
-          cur_name: File.basename(to_path),
-          parent_id: new_parent.id,
-          mtime: Time.current,
-          updated_at: Time.current
-        )
-        Events.record!(@project_id, :renamed, renamed, user_id: user_id)
-      end
-      node.reload
+      (branch_fs(branch) || branch_fs(Branch::MAIN)).move(from, to, user_id: user_id)
     end
     alias rename move
 
     # --- content -----------------------------------------------------------
 
     def read(path, revision_id: nil, branch: Branch::MAIN)
-      fs = branch_fs(branch)
-      return fs.read(path, revision_id: revision_id) if fs
+      if (fs = branch_fs(branch))
+        return fs.read(path, revision_id: revision_id)
+      end
+      # Detached per-file branch: path is on main's index, content under `branch`.
       node = find(path)
       return nil unless node
-      node = node.resolve            # self (non-symlink), target, or nil (dangling/cycle)
+      node = node.resolve
       return nil unless node && node.ftype == 'file'
-      return Content.at(node, revision_id) if revision_id
-      Content.head_cached(node, branch)
+      record = node.respond_to?(:record) ? node.record : node
+      return Content.at(record, revision_id) if revision_id
+      Content.head_cached(record, branch)
     end
     alias read_content read
 
@@ -423,8 +303,9 @@ module DbfsV2
     # The live project branch named `name`, or nil (main, or a name that is
     # only a detached per-file branch).
     def project_branch(name)
-      return nil if name.nil? || name.to_s == Branch::MAIN
-      ProjectBranch.live.find_by(project_id: @project_id, name: name.to_s)
+      return nil if name.nil?
+      n = name.to_s
+      n == Branch::MAIN ? main_branch : ProjectBranch.live.find_by(project_id: @project_id, name: n)
     end
 
     def project_branches(include_tombstoned: false)
@@ -436,46 +317,18 @@ module DbfsV2
     # Fork a project branch off `from` (default main): a full copy of its
     # current entries, content pinned at their heads. See BranchFs.fork!.
     def create_project_branch(name, from: Branch::MAIN, user_id: nil)
-      parent = from.to_s == Branch::MAIN ? main_branch : ProjectBranch.live.find_by!(project_id: @project_id, name: from.to_s)
+      parent = from.is_a?(ProjectBranch) ? from : project_branch(from)
+      raise ArgumentError, "no project branch #{from}" unless parent
       raise ArgumentError, "branch #{name.inspect} exists" if project_branch(name)
       BranchFs.fork!(self, name.to_s, from: parent, user_id: user_id)
     end
 
     # adopt! — an existing node placed at `path` on `branch` with its content
     # at `revision_id` (a project merge bringing a file the source created, or
-    # renamed, onto the target with its identity intact). On main the node's
-    # own row is the index: it moves from wherever it was parked (the
-    # placeholder path of a branch-only file, or a tombstone) to `path`; a
-    # tombstoned stranger at `path` is parked aside so the unique path index
-    # holds. Content lands on the main row as a head move (FF) or a new row.
+    # renamed, onto the target with its identity intact).
     def adopt!(record, path, branch: Branch::MAIN, ftype: nil, revision_id: nil, user_id: nil)
-      fs = branch_fs(branch)
-      ftype ||= record.ftype
-      return fs.adopt!(record, path, ftype: ftype, revision_id: revision_id, user_id: user_id) if fs
-
-      p = normalize(path)
-      FileNode.transaction do
-        parent_id = ensure_dir!(File.dirname(p), user_id: user_id).id
-        clash = find_any(p)
-        if clash && clash.id != record.id
-          raise "destination already exists: #{p}" unless clash.deleted?
-          clash.update_columns(path: "#{BranchFs::PLACEHOLDER}/tombstones/#{clash.id}", parent_id: nil, updated_at: Time.current)
-        end
-        record.update_columns(path: p, cur_name: File.basename(p), parent_id: parent_id, ftype: ftype,
-                              deleted_at: nil, mtime: Time.current, updated_at: Time.current)
-        Events.record_node!(@project_id, :created, record.reload, user_id: user_id)
-        if ftype == 'file' && revision_id
-          b = record.branches.find_by(name: Branch::MAIN)
-          if b
-            b.update!(head_revision_id: revision_id) if b.head_revision_id != revision_id
-          else
-            record.branches.create!(name: Branch::MAIN, project_branch_id: main_branch.id,
-                                    head_revision_id: revision_id, origin_revision_id: revision_id)
-          end
-          DocumentCache.invalidate(record.id, Branch::MAIN)
-        end
-      end
-      record
+      fs = branch_fs(branch) || branch_fs(Branch::MAIN)
+      fs.adopt!(record, path, ftype: ftype || record.ftype, revision_id: revision_id, user_id: user_id)
     end
 
     # Tombstone a project branch: its entries and content branches stay (a
@@ -488,10 +341,9 @@ module DbfsV2
       pb
     end
 
-    # BranchFs for a non-main project branch (by name or row), else nil: the
-    # signal to take main's code path.
+    # BranchFs for a live project branch (by name or row), including main.
     def branch_fs(branch)
-      pb = branch.is_a?(ProjectBranch) ? (branch.main? ? nil : branch) : project_branch(branch)
+      pb = branch.is_a?(ProjectBranch) ? branch : project_branch(branch)
       pb && BranchFs.new(self, pb)
     end
 
@@ -501,12 +353,16 @@ module DbfsV2
     # from the branch's index; with for_write the branch's content row for
     # that file is created if this is its first write.
     def locate(path, branch, for_write: false)
-      fs = branch_fs(branch)
-      return [resolve(path) || find(path), branch] unless fs
-      node = fs.resolve(path) || fs.find(path)
-      return [nil, fs.branch.name] unless node
-      fs.ensure_content_branch!(node) if for_write && node.ftype == 'file'
-      [node, fs.branch.name]
+      if (fs = branch_fs(branch))
+        node = fs.resolve(path) || fs.find(path)
+        return [nil, fs.branch.name] unless node
+        fs.ensure_content_branch!(node) if for_write && node.ftype == 'file'
+        [node, fs.branch.name]
+      else
+        main = branch_fs(Branch::MAIN)
+        node = main.resolve(path) || main.find(path)
+        [node, branch]
+      end
     end
 
     # A merge whose target names a project branch needs that branch's content
@@ -557,7 +413,8 @@ module DbfsV2
                                user_id: user_id)
     end
 
-    # This store bound to one project branch (BranchView): main gives self.
+    # Unbound store (default branch main, `branch:` honoured). Binding a
+    # non-default name returns a BranchView that forces that name.
     def for_branch(name)
       name.to_s == Branch::MAIN ? self : BranchView.new(self, name)
     end
@@ -566,12 +423,7 @@ module DbfsV2
     # file `branch` has — what a flusher mirrors to disk. On a project branch
     # a file it has not written has its pin as head. `node_ids` narrows it.
     def text_heads(branch: Branch::MAIN, node_ids: nil)
-      fs = branch_fs(branch)
-      return fs.text_heads(node_ids: node_ids) if fs
-      scope = FileNode.live.where(project_id: @project_id, ftype: 'file', binary: false, symlink_target: nil)
-      scope = scope.where(id: node_ids) if node_ids
-      scope.joins(:branches).where(branches: { name: Branch::MAIN })
-           .pluck('file_nodes.id', 'file_nodes.path', 'branches.head_revision_id')
+      (branch_fs(branch) || branch_fs(Branch::MAIN)).text_heads(node_ids: node_ids)
     end
 
     # The project's branches as a rail graph (ProjectGraph.build).
@@ -726,124 +578,13 @@ module DbfsV2
         n.parent_id = nil
       end
     rescue ActiveRecord::RecordNotUnique
-      find('/')
+      FileNode.find_by(project_id: @project_id, path: '/')
     end
 
-    # mkdir -p: ensure every folder along `path` exists, returning the node at
-    # `path` (the root for '/'). Each segment is find-or-create with a
-    # RecordNotUnique fallback, so two concurrent creators of the same
-    # directory do not lose to a raw unique-index violation.
+    # mkdir -p on main's index. Kept so callers (and the race test) have a
+    # Store-level entry; the index itself is BranchFs.
     def ensure_dir!(path, user_id: nil)
-      path = normalize(path)
-      return ensure_root!(user_id: user_id) if path == '/'
-      cur = ensure_root!(user_id: user_id)
-      current_path = ''
-      path.split('/').reject(&:empty?).each do |part|
-        current_path = "#{current_path}/#{part}"
-        cur = find_or_create_dir!(current_path, part, cur.id, user_id: user_id)
-      end
-      cur
-    end
-
-    # Find-or-create a single directory segment, tolerating a concurrent create
-    # (the loser re-reads the winner's row). Refuses to use a non-folder as a
-    # parent, so a file cannot contain a child path.
-    def find_or_create_dir!(current_path, part, parent_id, user_id: nil)
-      existing = find_any(current_path)
-      if existing
-        # A tombstoned parent on the way to a create is resurrected, so a path
-        # under a deleted directory can be reused (the dir comes back).
-        if existing.deleted?
-          FileNode.transaction do
-            existing.update_columns(deleted_at: nil, updated_at: Time.current)
-            Events.record_node!(@project_id, :restored, existing.reload, user_id: user_id)
-          end
-        end
-        raise "not a directory: #{current_path}" unless existing.ftype == 'folder'
-        return existing
-      end
-
-      # A savepoint, so the RecordNotUnique a concurrent creator provokes rolls
-      # back only this insert and not a caller's enclosing transaction.
-      FileNode.transaction(requires_new: true) do
-        n = FileNode.create!(
-          project_id: @project_id, path: current_path, ftype: 'folder',
-          owner: default_owner, posix_mode: 0o755, cur_name: part, parent_id: parent_id,
-          created_by: user_id
-        )
-        Events.record_node!(@project_id, :created, n, user_id: user_id)
-        n
-      end
-    rescue ActiveRecord::RecordNotUnique
-      find(current_path)
-    end
-
-    # FileEvent row hashes for a scope of nodes (root excluded: it always
-    # exists and is not a project-state fact).
-    def event_rows(scope)
-      scope.where.not(path: '/').pluck(:id, :path, :ftype).map do |id, path, ftype|
-        { file_node_id: id, path: path, ftype: ftype }
-      end
-    end
-
-    def build_tree(node, include_tombstoned: false)
-      h = {
-        id: node.id, name: node.cur_name, path: node.path, type: node.ftype,
-        binary: node.binary?, symlink: node.symlink?,
-        children: children_scope(node, include_tombstoned)
-                    .order(:cur_name, :ftype)
-                    .map { |c| build_tree(c, include_tombstoned: include_tombstoned) }
-      }
-      h[:deleted] = node.deleted? if include_tombstoned
-      h
-    end
-
-    def children_scope(node, include_tombstoned)
-      include_tombstoned ? node.children : node.children.live
-    end
-
-    # Ids of a node and every descendant (by path prefix), for tombstone/
-    # restore. LIKE metacharacters in the literal prefix are escaped.
-    def tombstone_ids(node)
-      escaped = "#{node.path}/".gsub('\\', '\\\\').gsub('%', '\\%').gsub('_', '\\_')
-      FileNode.where(project_id: @project_id)
-              .where("path = ? OR path LIKE ? ESCAPE '\\'", node.path, "#{escaped}%")
-              .pluck(:id)
-    end
-
-    # Create a node at `path`, or RESURRECT a tombstoned one (clearing the
-    # tombstone, so its revision DAG carries over). A live node at `path` is left
-    # to the unique index to reject (see decisions #23).
-    def recreate_or_new(path, ftype:, owner:, group:, mode:, binary: false, user_id:)
-      existing = find_any(path)
-      # mkdir -p before the transaction (see create_symlink).
-      parent_id = ensure_dir!(File.dirname(path), user_id: user_id).id
-      if existing&.deleted?
-        # Resurrection is a `created` event on the same node id: the path is
-        # back, with this identity (ADR-004), from this seq on.
-        FileNode.transaction do
-          existing.update_columns(
-            deleted_at: nil, ftype: ftype,
-            owner: owner || existing.owner || default_owner,
-            posix_group: group, posix_mode: mode, binary: binary,
-            created_by: existing.created_by || user_id,
-            parent_id: parent_id,
-            mtime: Time.current, updated_at: Time.current
-          )
-          Events.record_node!(@project_id, :created, existing.reload, user_id: user_id)
-        end
-        return existing
-      end
-      FileNode.transaction do
-        n = FileNode.create!(
-          project_id: @project_id, path: path, ftype: ftype,
-          owner: owner || default_owner, posix_group: group, posix_mode: mode,
-          created_by: user_id, binary: binary,
-          parent_id: parent_id
-        )
-        Events.record_node!(@project_id, :created, n, user_id: user_id)
-        n
-      end
+      branch_fs(Branch::MAIN).send(:ensure_dir!, path, user_id: user_id)
     end
 
     def normalize(path)

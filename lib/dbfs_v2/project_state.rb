@@ -65,11 +65,7 @@ module DbfsV2
           remaining = file_ids - resolved.keys
           break if remaining.empty?
         end
-        rows = if b.main?
-                 Branch.where(file_node_id: remaining, name: Branch::MAIN).to_a
-               else
-                 Branch.where(file_node_id: remaining, project_branch_id: b.id).to_a
-               end
+        rows = Branch.where(file_node_id: remaining, project_branch_id: b.id).to_a
         rows.select! { |r| r.live_at?(cut) }
         heads = heads_at(rows.map(&:id), cut)
         rows.each { |r| resolved[r.file_node_id] = [r.name, heads[r.id]] }

@@ -19,6 +19,20 @@ class ProjectBranchTest < Minitest::Test
   def flat(n) = [n[:path]] + (n[:children] || []).flat_map { |c| flat(c) }
   def state_paths(branch) = @s.state(branch: branch).paths
 
+  def test_main_index_is_branch_entries
+    node = @s.find('/lib/a.rb')
+    entry = @s.main_branch.entries.live.find_by!(file_node_id: node.id)
+    assert_equal '/lib/a.rb', entry.path
+    assert_equal '/lib/a.rb', node.path
+    refute_equal '/lib/a.rb', node.record.path
+    assert node.record.path.start_with?(DbfsV2::BranchFs::IDENTITY_PREFIX)
+    pb = @s.create_project_branch('feature')
+    assert pb.entries.live.exists?(file_node_id: node.id, path: '/lib/a.rb')
+    @s.write('/lib/a.rb', set("a2 on main\n"))
+    assert_equal "a1\n", @s.read('/lib/a.rb', branch: 'feature')
+    assert_equal "a2 on main\n", @s.read('/lib/a.rb')
+  end
+
   def test_fork_copies_the_index_and_content_reads_through
     pb = @s.create_project_branch('feature')
     refute pb.main?
@@ -60,8 +74,8 @@ class ProjectBranchTest < Minitest::Test
     node = @s.create_file('/lib/only.rb', content: "only\n", branch: 'feature')
     assert_equal '/lib/only.rb', node.path
     assert_nil @s.find('/lib/only.rb')
-    assert FileNode.find(node.id).deleted?, 'tombstoned on main'
-    assert FileNode.find(node.id).path.start_with?(DbfsV2::BranchFs::PLACEHOLDER)
+    refute @s.main_branch.entries.live.exists?(file_node_id: node.id), 'not on main'
+    assert FileNode.find(node.id).path.start_with?(DbfsV2::BranchFs::IDENTITY_PREFIX)
     assert_equal "only\n", @s.read('/lib/only.rb', branch: 'feature')
     assert_includes state_paths('feature'), '/lib/only.rb'
     refute_includes @s.state.paths, '/lib/only.rb'

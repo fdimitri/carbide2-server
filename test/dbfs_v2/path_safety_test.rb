@@ -61,20 +61,20 @@ class PathSafetyTest < Minitest::Test
 
   # --- duplicate create -----------------------------------------------------
 
-  # WART: the unique index leaks as ActiveRecord::RecordNotUnique rather than a
-  # friendlier error (or returning the existing node, as the old DBFS did).
-  # Pinned so changing it is deliberate. See decisions #23.
+  # Duplicate create is refused without clobbering. BranchFs raises a
+  # destination error (the unique live-path index is the backstop).
   def test_create_file_on_existing_path_raises_and_does_not_overwrite
     @s.create_file('/f', content: 'x')
-    assert_raises(ActiveRecord::RecordNotUnique) { @s.create_file('/f', content: 'y') }
+    err = assert_raises(RuntimeError) { @s.create_file('/f', content: 'y') }
+    assert_match(/destination already exists/, err.message)
     assert_equal 'x', @s.read('/f'), 'the existing file must be untouched'
   end
 
   def test_create_folder_colliding_with_existing_node_raises
     @s.create_folder('/d')
-    assert_raises(ActiveRecord::RecordNotUnique) { @s.create_folder('/d') }
+    assert_raises(RuntimeError) { @s.create_folder('/d') }
     @s.create_file('/g', content: 'x')
-    assert_raises(ActiveRecord::RecordNotUnique) { @s.create_folder('/g') } # folder where file is
+    assert_raises(RuntimeError) { @s.create_folder('/g') } # folder where file is
   end
 
 end

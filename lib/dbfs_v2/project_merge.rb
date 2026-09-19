@@ -275,7 +275,6 @@ module DbfsV2
     end
 
     def pb!(store, name)
-      return store.main_branch if name.to_s == Branch::MAIN
       store.project_branch(name.to_s) or raise ArgumentError, "no project branch #{name}"
     end
 

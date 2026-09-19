@@ -2,25 +2,22 @@
 require 'delegate'
 
 module DbfsV2
-  # BranchFs — filesystem semantics of one non-main project branch (ADR-042).
-  #
-  # Main's index is file_nodes (path, deleted_at, parent_id); a project branch
-  # has its own in branch_entries: a full copy of the parent's live entries at
-  # the fork, then its own creates/deletes/renames. Every operation here
-  # records the same FileEvents Store records for main, tagged with the
-  # branch, so ProjectState.at(S, P) can fold the branch's history; the
-  # entries table is the branch's *current* state, as file_nodes is main's.
+  # BranchFs — filesystem semantics of one project branch (ADR-042), including
+  # main. The current path index is branch_entries: a full copy of the parent's
+  # live entries at the fork, then this branch's creates/deletes/renames.
+  # FileNode is identity (uuid, posix, DAG); its path column is a unique slot,
+  # not the user-visible location. Every operation records FileEvents tagged
+  # with this branch so ProjectState.at(S, P) can fold the branch's history.
   #
   # Identity is shared: an entry points at a FileNode, so a file's revisions
   # and per-file branches are the same rows whichever project branch you look
-  # from. A file created on a branch gets a FileNode that is NOT live on main
-  # (tombstoned, with a placeholder path that cannot collide with main's
-  # unique index); merging it to main gives it its real path there.
+  # from. A file created on one branch has no entry on the others until a
+  # merge adopts it.
   #
   # Content on the branch, per file: `content_branch` (a per-file Branch named
   # after the project branch, bound to it) once the branch has written the
   # file; until then pinned at `revision_id`, the parent's head at the fork —
-  # frozen like a git branch, not an overlay that drifts with main.
+  # frozen like a git branch, not an overlay that drifts with the parent.
   class BranchFs
     # A FileNode as this branch sees it: the branch's path and ftype, the
     # node's everything else (id, revisions, branches, posix, symlink target).
@@ -40,6 +37,8 @@ module DbfsV2
       def root?    = @entry.path == '/'
       def deleted? = @entry.deleted?
       def parent_path = root? ? nil : File.dirname(@entry.path)
+      def parent      = root? ? nil : @fs.find(parent_path)
+      def parent_id   = parent&.id
 
       def resolve(seen: [], depth: 0)
         return self unless symlink?
@@ -64,7 +63,9 @@ module DbfsV2
       def hash = id.hash
     end
 
-    PLACEHOLDER = '/.project-branches'
+    # FileNode.path is a unique identity slot, not a branch location.
+    IDENTITY_PREFIX = '/.nodes'
+    PLACEHOLDER = IDENTITY_PREFIX # historical name; feature-only nodes used /.project-branches
 
     attr_reader :store, :branch
 
@@ -84,20 +85,11 @@ module DbfsV2
       ActiveRecord::Base.transaction do
         pb = ProjectBranch.create!(project_id: store.project_id, name: name, forked_from: from, user_id: user_id)
         pb.update_columns(fork_seq: pb.seq, base_seq: pb.seq, base_branch_id: from.id)
-        rows = from.main? ? main_rows(store) : branch_rows(from)
+        rows = branch_rows(from)
         now  = Time.now.utc
         rows.each { |r| r.merge!(project_branch_id: pb.id, created_at: now, updated_at: now) }
         BranchEntry.insert_all!(rows) if rows.any?
         pb
-      end
-    end
-
-    def self.main_rows(store)
-      nodes = FileNode.live.where(project_id: store.project_id).where.not(path: '/').pluck(:id, :path, :ftype)
-      heads = Branch.live.where(file_node_id: nodes.map(&:first), name: Branch::MAIN)
-                    .pluck(:file_node_id, :head_revision_id).to_h
-      nodes.map do |id, path, ftype|
-        { file_node_id: id, path: path, ftype: ftype, revision_id: ftype == 'file' ? heads[id] : nil, content_branch_id: nil }
       end
     end
 
@@ -113,14 +105,14 @@ module DbfsV2
 
     def find(path)
       p = norm(path)
-      return root_node if p == '/'
+      return root_node(create: false) if p == '/'
       e = live_entries.find_by(path: p)
       e && wrap(e)
     end
 
     def find_any(path)
       p = norm(path)
-      return root_node if p == '/'
+      return root_node(create: false) if p == '/'
       e = @branch.entries.find_by(path: p)
       e && wrap(e)
     end
@@ -160,8 +152,10 @@ module DbfsV2
       under = p == '/' ? scope.where.not(path: '/') : scope.where("path LIKE ? ESCAPE '\\'", "#{like_escape(p)}/%")
       by_parent = under.order(:path).group_by { |e| File.dirname(e.path) }
       build = lambda do |n|
-        h = { id: n.id, name: n.cur_name, path: n.path, type: n.ftype, binary: n.binary?, symlink: n.symlink?,
-              children: (by_parent[n.path] || []).sort_by { |e| [e.ftype == 'folder' ? 0 : 1, File.basename(e.path).downcase] }.map { |e| build.call(wrap(e)) } }
+        h = { id: n.id, name: n.cur_name, path: n.path, type: n.ftype, binary: n.binary?, symlink: n.symlink? }
+        if n.ftype == 'folder'
+          h[:children] = (by_parent[n.path] || []).sort_by { |e| [e.ftype == 'folder' ? 0 : 1, File.basename(e.path).downcase] }.map { |e| build.call(wrap(e)) }
+        end
         h[:deleted] = n.deleted? if include_tombstoned
         h
       end
@@ -176,8 +170,8 @@ module DbfsV2
       ActiveRecord::Base.transaction do
         ensure_dir!(File.dirname(p), user_id: user_id)
         node = place!(p, ftype: 'file', owner: owner, group: group, mode: mode, binary: binary, user_id: user_id)
+        b = ensure_content_branch!(node)
         if content && !content.empty?
-          b = ensure_content_branch!(node)
           @store.seed_content!(node.record, b, content, binary: binary, user_id: user_id)
         end
       end
@@ -186,7 +180,7 @@ module DbfsV2
 
     def create_folder(path, owner: nil, group: nil, mode: 0o755, user_id: nil)
       p = norm(path)
-      return root_node if p == '/'
+      return root_node(user_id: user_id) if p == '/'
       ActiveRecord::Base.transaction do
         ensure_dir!(File.dirname(p), user_id: user_id)
         place!(p, ftype: 'folder', owner: owner, group: group, mode: mode, user_id: user_id)
@@ -332,8 +326,10 @@ module DbfsV2
 
     def live_entries = @branch.entries.live
 
-    def root_node
-      root = FileNode.find_by(project_id: project_id, path: '/') || @store.send(:ensure_root!)
+    def root_node(create: true, user_id: nil)
+      root = FileNode.find_by(project_id: project_id, path: '/')
+      root ||= @store.send(:ensure_root!, user_id: user_id) if create
+      return nil unless root
       Node.new(root, BranchEntry.new(project_branch: @branch, file_node: root, path: '/', ftype: 'folder'), self)
     end
 
@@ -365,14 +361,17 @@ module DbfsV2
     # (resurrected if this branch tombstoned it, else a new node).
     def ensure_dir!(path, user_id: nil)
       p = norm(path)
-      return if p == '/'
-      return if live_entries.where(path: p, ftype: 'folder').exists?
+      return root_node(user_id: user_id) if p == '/'
+      if (e = live_entries.find_by(path: p))
+        raise "not a directory: #{p}" unless e.ftype == 'folder'
+        return wrap(e)
+      end
       ensure_dir!(File.dirname(p), user_id: user_id)
       place!(p, ftype: 'folder', owner: nil, group: nil, mode: 0o755, user_id: user_id)
     end
 
     # Put an entry at `path`: resurrect this branch's tombstoned entry there
-    # (same identity), else a new FileNode that lives only on this branch. A
+    # (same identity), else a new FileNode (identity slot, not a location). A
     # live entry at the path is an error.
     def place!(path, ftype:, owner:, group:, mode:, user_id:, binary: false, symlink_target: nil)
       raise "destination already exists: #{path}" if live_entries.where(path: path).exists?
@@ -381,21 +380,34 @@ module DbfsV2
         existing.update_columns(deleted_at: nil, ftype: ftype, updated_at: Time.current)
         existing.file_node.update_columns(binary: binary, symlink_target: symlink_target, updated_at: Time.current) if ftype == 'file'
         node = wrap(existing.reload)
-      else
-        record = FileNode.create!(
-          project_id: project_id,
-          path: "#{PLACEHOLDER}/#{@branch.id}#{path}",
-          cur_name: File.basename(path),
-          ftype: ftype, binary: binary, symlink_target: symlink_target,
-          owner: owner || @store.send(:default_owner), posix_group: group, posix_mode: mode,
-          created_by: user_id, deleted_at: Time.current, parent_id: nil
-        )
-        entry = @branch.entries.create!(file_node: record, path: path, ftype: ftype)
-        node = Node.new(record, entry, self)
+        Events.record!(project_id, :created, [{ file_node_id: node.id, path: path, ftype: ftype }],
+                       user_id: user_id, branch: @branch)
+        return node
       end
+      node = insert_node!(path, ftype: ftype, owner: owner, group: group, mode: mode,
+                          user_id: user_id, binary: binary, symlink_target: symlink_target)
       Events.record!(project_id, :created, [{ file_node_id: node.id, path: path, ftype: ftype }],
                      user_id: user_id, branch: @branch)
       node
+    rescue ActiveRecord::RecordNotUnique
+      find(path) or raise
+    end
+
+    def insert_node!(path, ftype:, owner:, group:, mode:, user_id:, binary:, symlink_target:)
+      ActiveRecord::Base.transaction(requires_new: true) do
+        nid = SecureRandom.uuid
+        record = FileNode.create!(
+          id: nid,
+          project_id: project_id,
+          path: "#{IDENTITY_PREFIX}/#{nid}",
+          cur_name: File.basename(path),
+          ftype: ftype, binary: binary, symlink_target: symlink_target,
+          owner: owner || @store.send(:default_owner), posix_group: group, posix_mode: mode,
+          created_by: user_id, parent_id: nil
+        )
+        entry = @branch.entries.create!(file_node: record, path: path, ftype: ftype)
+        Node.new(record, entry, self)
+      end
     end
   end
 end

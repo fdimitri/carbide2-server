@@ -22,8 +22,8 @@ class FileNode < ApplicationRecord
   validates :path, presence: true
   validates :ftype, inclusion: { in: %w[file folder] }
 
-  # Soft-delete: a tombstoned node keeps its row, branch and revision DAG but is
-  # hidden from find/list/tree/read. See Store#delete / migration 005.
+  # Soft-delete of a *node row* is leftover from when file_nodes was main's
+  # path index. Live-ness is branch_entries.deleted_at; FileNode is identity.
   scope :live, -> { where(deleted_at: nil) }
   scope :tombstoned, -> { where.not(deleted_at: nil) }
 
@@ -76,7 +76,11 @@ class FileNode < ApplicationRecord
     return self unless symlink?
     return nil if depth >= 40 || seen.include?(id)
 
-    target = self.class.live.find_by(project_id: project_id, path: symlink_target)
+    target = begin
+      main = ProjectBranch.live.find_by(project_id: project_id, name: Branch::MAIN)
+      entry = main&.entries&.live&.find_by(path: symlink_target)
+      entry&.file_node
+    end
     return nil unless target
 
     target.resolve(seen: seen + [id], depth: depth + 1)

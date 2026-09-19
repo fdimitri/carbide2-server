@@ -16,12 +16,14 @@ class TextVsBinaryGuardsTest < Minitest::Test
     assert_raises(RuntimeError) { @s.write('/b', d('insertDataSingleLine', { startLine: 0, startChar: 0, data: 'x' })) }
   end
 
-  def test_write_to_nonexistent_branch_raises
+  def test_write_to_main_on_detached_create_starts_empty
     @s.create_file('/f', content: 'x', branch: 'foo')
-    # 'main' was never created -> must raise, not silently fork history
-    assert_raises(ActiveRecord::RecordNotFound) do
-      @s.write('/f', d('insertDataSingleLine', { startLine: 0, startChar: 1, data: 'y' }), branch: 'main')
-    end
+    # Path is on main; content lives on the detached 'foo' row. The first write
+    # on main is a project-branch first write (empty pin), not a silent reuse
+    # of foo's history.
+    @s.write('/f', d('insertDataSingleLine', { startLine: 0, startChar: 0, data: 'y' }), branch: 'main')
+    assert_equal 'y', @s.read('/f')
+    assert_equal 'x', @s.read('/f', branch: 'foo')
   end
 end
 
@@ -152,7 +154,7 @@ class IsolationAndDuplicateTest < Minitest::Test
   def test_duplicate_path_raises
     @s = setup_store
     @s.create_file('/f', content: 'a')
-    assert_raises(ActiveRecord::RecordNotUnique) { @s.create_file('/f', content: 'b') }
+    assert_raises(RuntimeError) { @s.create_file('/f', content: 'b') }
   end
 
   def test_two_projects_same_path_isolated

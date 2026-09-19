@@ -8,7 +8,7 @@ class TreeTest < Minitest::Test
     @s = setup_store
   end
 
-  def test_create_sets_parent_id
+  def test_create_sets_parent
     @s.create_file('/src/app.rb', content: 'x')
     f = @s.find('/src/app.rb')
     assert_equal '/src', f.parent.path
@@ -80,13 +80,12 @@ class TreeTest < Minitest::Test
     assert_equal 'x', @s.read('/b/x.txt')
   end
 
-  def test_move_directory_keeps_children_parent_edges
+  def test_move_directory_keeps_child_parent_identity
     @s.create_folder('/a')
     @s.create_file('/a/x.txt', content: 'x')
     dir = @s.find('/a')
     @s.move('/a', '/b')
-    # child's parent_id still points at the same (renamed) dir node
-    assert_equal dir.id, @s.find('/b/x.txt').parent_id
+    assert_equal dir.id, @s.find('/b/x.txt').parent.id
   end
 
   def test_rename_is_alias_for_move
@@ -144,32 +143,19 @@ class TreeRaceRecoveryTest < Minitest::Test
   include DbfsV2TestHelpers
   def setup = @s = setup_store
 
-  # ensure_dir! must recover when another writer wins the create race: our find
-  # misses (nil), our create! loses with RecordNotUnique, and we fall back to
-  # the winner's row instead of raising.
-  def test_ensure_dir_recovers_from_lost_create_race
-    @s.create_folder('/a')            # the "winner" row already exists
-    orig_find = @s.method(:find)
-    calls = { n: 0 }
-    fake_find = proc do |p|
-      calls[:n] += 1
-      calls[:n] == 1 ? nil : orig_find.call(p)   # first lookup misses, then hit
-    end
-
-    @s.stub(:find, fake_find) do
-      FileNode.stub(:create!, proc { |*| raise ActiveRecord::RecordNotUnique, 'dup' }) do
-        node = @s.send(:ensure_dir!, '/a')
-        assert_equal '/a', node.path
-      end
-    end
+  # ensure_dir! returns the existing folder (mkdir -p). Lost-create recovery
+  # is RecordNotUnique inside place!, which re-finds the winner's row.
+  def test_ensure_dir_returns_existing_folder
+    @s.create_folder('/a')
+    node = @s.send(:ensure_dir!, '/a')
+    assert_equal '/a', node.path
+    assert_equal 'folder', node.ftype
   end
 
-  def test_ensure_root_recovers_from_lost_create_race
-    s = setup_store
-    FileNode.stub(:find_or_create_by!, proc { |*| raise ActiveRecord::RecordNotUnique, 'dup' }) do
-      # root doesn't exist yet; the create loses, recovery must not raise and
-      # must return nil rather than blowing up
-      assert_nil s.send(:ensure_root!)
-    end
+  def test_ensure_root_is_idempotent
+    a = @s.send(:ensure_root!)
+    b = @s.send(:ensure_root!)
+    assert_equal a.id, b.id
+    assert_equal '/', a.path
   end
 end

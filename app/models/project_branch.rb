@@ -1,10 +1,10 @@
 # A branch of the whole project (ADR-042): its own existence/identity log
-# (file_events tagged with this row) and, for non-main branches, its own
-# current path index (branch_entries). Identity is the uuid: a tombstoned name
-# can be reused by a new row without reviving this one's history.
+# (file_events tagged with this row) and current path index (branch_entries).
+# Identity is the uuid: a tombstoned name can be reused by a new row without
+# reviving this one's history.
 #
-# `main` is a row too, so events and content branches have one owner model,
-# but its index is file_nodes (Store's original code path), not branch_entries.
+# `main` is a row like any other, including its index: FileNode is identity
+# (uuid, posix, DAG), not the live path.
 class ProjectBranch < ApplicationRecord
   self.primary_key = 'id'
 

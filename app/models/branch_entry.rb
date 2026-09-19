@@ -1,9 +1,8 @@
-# One node as a non-main project branch currently has it: its path on that
-# branch and where its content comes from — `content_branch` once the branch
-# has written the file, else pinned at `revision_id` (the parent's head at the
-# fork). Tombstoned entries (`deleted_at`) keep the node known to the branch
-# so a re-create at the path resurrects the same identity, as file_nodes does
-# for main.
+# One node as a project branch currently has it: its path on that branch and
+# where its content comes from — `content_branch` once the branch has written
+# the file, else pinned at `revision_id` (the parent's head at the fork).
+# Tombstoned entries (`deleted_at`) keep the node known to the branch so a
+# re-create at the path resurrects the same identity.
 class BranchEntry < ApplicationRecord
   belongs_to :project_branch
   belongs_to :file_node
