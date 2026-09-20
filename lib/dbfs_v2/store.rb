@@ -380,18 +380,49 @@ module DbfsV2
     # seq ≤ S, each file's identity-rev from `branch_heads` at seq ≤ S. Omit
     # `seq:` for live lines. Not `(S, B)` — one branch, not a BranchSet fold.
     def state(branch: nil, seq: nil)
-      pb = if branch
-             branch.is_a?(ProjectBranch) ? branch : (project_branch(branch) || main_branch)
-           else
-             main_branch
-           end
-      ProjectDag.view(pb, seq: seq)
+      ProjectDag.view(resolve_project_branch(branch), seq: seq)
+    end
+
+    # Slider domain for the identity visualizer (PROTOCOL 13). `ticks` are
+    # running nodes on this branch, oldest first (one public path op each).
+    # `marks` are named snapshots hanging off this branch — they are not ticks;
+    # HEAD does not land on them.
+    def identity_axis(branch: Branch::MAIN)
+      pb = resolve_project_branch(branch)
+      ticks = ProjectNode.running.where(project_branch_id: pb.id).order(:seq).map { |n|
+        { seq: n.seq, node_id: n.id }
+      }
+      marks = ProjectNode.snapshots.where(project_branch_id: pb.id).where.not(name: nil).order(:seq).map { |n|
+        { seq: n.seq, node_id: n.id, name: n.name }
+      }
+      { branch: pb.name, ticks: ticks, marks: marks }
+    end
+
+    # Tree + FileEvents at clock `seq` on `branch`. `entries` are flat
+    # (id is FileNode UUID, path is location). `events` are the notifications
+    # that share this seq (empty when S sits between path ops).
+    def identity_at(seq:, branch: Branch::MAIN)
+      pb = resolve_project_branch(branch)
+      seq = seq.to_i
+      st = ProjectDag.view(pb, seq: seq)
+      n  = ProjectDag.node_at(pb, seq)
+      events = FileEvent.where(project_id: @project_id, project_branch_id: pb.id, seq: seq)
+                        .order(:path).map { |e|
+        { kind: e.kind, path: e.path, from_path: e.from_path,
+          file_node_id: e.file_node_id, ftype: e.ftype }
+      }
+      { branch: pb.name, seq: seq,
+        node: n && { id: n.id, seq: n.seq, kind: n.kind },
+        events: events,
+        entries: st.entries.values.sort_by(&:path).map { |e|
+          { id: e.file_node_id, path: e.path, ftype: e.ftype, revision_id: e.revision_id }
+        } }
     end
 
     # Freeze the running head's identity-revs as a snapshot node. HEAD stays
     # on the running node — a snapshot is a stored frozen tree, not a move.
     def snapshot!(name, branch: Branch::MAIN, user_id: nil)
-      pb = branch.is_a?(ProjectBranch) ? branch : (project_branch(branch) || main_branch)
+      pb = resolve_project_branch(branch)
       ProjectDag.snapshot!(pb, name: name, user_id: user_id)
     end
 
@@ -548,6 +579,16 @@ module DbfsV2
     end
 
     private
+
+    def resolve_project_branch(branch)
+      if branch.nil?
+        main_branch
+      elsif branch.is_a?(ProjectBranch)
+        branch
+      else
+        project_branch(branch) || main_branch
+      end
+    end
 
     def default_owner
       ENV.fetch('USER', 'root')

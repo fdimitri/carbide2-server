@@ -244,4 +244,56 @@ class ProjectStateTest < Minitest::Test
     refute live.include?('/only-main')
     assert_empty @s.state(branch: 'feature', seq: pb.seq - 1).paths
   end
+
+  def test_identity_axis_is_running_nodes_and_named_snapshot_marks
+    @s.create_file('/a', content: 'a')
+    first = @s.main_branch.head_node
+    @s.write('/a', ins(0, 0, 'x'))
+    @s.create_file('/b', content: 'b')
+    second = @s.main_branch.head_node
+    @s.snapshot!('cut')
+    axis = @s.identity_axis
+    assert_equal 'main', axis[:branch]
+    assert_equal [first.seq, second.seq], axis[:ticks].map { |t| t[:seq] }
+    assert_equal [first.id, second.id], axis[:ticks].map { |t| t[:node_id] }
+    assert_equal ['cut'], axis[:marks].map { |m| m[:name] }
+    refute_includes axis[:ticks].map { |t| t[:node_id] }, axis[:marks].first[:node_id]
+  end
+
+  def test_identity_at_is_the_tree_and_events_at_that_seq
+    n = @s.create_file('/dir/f.txt', content: 'x')
+    seq = @s.main_branch.head_node.seq
+    at = @s.identity_at(seq: seq)
+    assert_equal seq, at[:seq]
+    assert_equal @s.main_branch.head_node_id, at[:node][:id]
+    assert_equal %w[/dir /dir/f.txt], at[:entries].map { |e| e[:path] }
+    assert_equal n.id, at[:entries].find { |e| e[:path] == '/dir/f.txt' }[:id]
+    assert_equal %w[created created], at[:events].map { |e| e[:kind] }
+    assert_equal [seq], at[:events].map { |e| FileEvent.find_by!(file_node_id: e[:file_node_id], seq: seq).seq }.uniq
+
+    @s.write('/dir/f.txt', ins(0, 0, 'y'))
+    mid = @s.identity_at(seq: @s.seq)
+    assert_equal %w[/dir /dir/f.txt], mid[:entries].map { |e| e[:path] }
+    assert_empty mid[:events], 'a content write is not a path-op tick'
+
+    @s.move('/dir/f.txt', '/renamed.txt')
+    moved = @s.identity_at(seq: @s.main_branch.head_node.seq)
+    assert_equal n.id, moved[:entries].find { |e| e[:path] == '/renamed.txt' }[:id]
+    refute moved[:entries].any? { |e| e[:path] == '/dir/f.txt' }
+    assert_equal ['renamed'], moved[:events].map { |e| e[:kind] }.uniq
+    assert_equal '/dir/f.txt', moved[:events].find { |e| e[:file_node_id] == n.id }[:from_path]
+  end
+
+  def test_identity_axis_on_a_fork_is_that_branch_only
+    @s.create_file('/f', content: 'a')
+    @s.create_project_branch('feature')
+    @s.create_file('/g', content: 'b', branch: 'feature')
+    main = @s.identity_axis
+    feat = @s.identity_axis(branch: 'feature')
+    refute_equal main[:ticks].map { |t| t[:node_id] }, feat[:ticks].map { |t| t[:node_id] }
+    assert feat[:ticks].size >= 1
+    g = @s.identity_at(seq: feat[:ticks].last[:seq], branch: 'feature')
+    assert g[:entries].any? { |e| e[:path] == '/g' }
+    refute @s.identity_at(seq: main[:ticks].last[:seq])[:entries].any? { |e| e[:path] == '/g' }
+  end
 end
