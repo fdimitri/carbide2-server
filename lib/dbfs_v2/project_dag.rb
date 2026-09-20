@@ -64,25 +64,28 @@ module DbfsV2
     def insert!(branch, parent:, entries:, kind:, second_parent: nil, name: nil, user_id: nil)
       id = tree_hash(parent_id: parent&.id, second_parent_id: second_parent&.id, kind: kind, name: name, entries: entries)
       now = Time.now.utc
-      node = ProjectNode.create!(
-        id: id, project_id: branch.project_id, project_branch_id: branch.id,
-        parent_id: parent&.id, second_parent_id: second_parent&.id,
-        kind: kind, name: name, user_id: user_id, created_at: now, updated_at: now
-      )
-      if entries.any?
-        ProjectNodeEntry.insert_all!(entries.map { |r|
-          { project_node_id: id, file_node_id: r[:file_node_id], path: r[:path], ftype: r[:ftype] || 'file',
-            content_branch_id: r[:content_branch_id], revision_id: r[:revision_id],
-            created_at: now, updated_at: now }
-        })
+      node = nil
+      begin
+        ActiveRecord::Base.transaction(requires_new: true) do
+          node = ProjectNode.create!(
+            id: id, project_id: branch.project_id, project_branch_id: branch.id,
+            parent_id: parent&.id, second_parent_id: second_parent&.id,
+            kind: kind, name: name, user_id: user_id, created_at: now, updated_at: now
+          )
+          if entries.any?
+            ProjectNodeEntry.insert_all!(entries.map { |r|
+              { project_node_id: id, file_node_id: r[:file_node_id], path: r[:path], ftype: r[:ftype] || 'file',
+                content_branch_id: r[:content_branch_id], revision_id: r[:revision_id],
+                created_at: now, updated_at: now }
+            })
+          end
+        end
+      rescue ActiveRecord::RecordNotUnique
+        node = ProjectNode.find_by(id: id)
+        raise unless node
       end
       point_head!(branch, node) if kind == ProjectNode::RUNNING
       node
-    rescue ActiveRecord::RecordNotUnique
-      existing = ProjectNode.find_by(id: id)
-      raise unless existing
-      point_head!(branch, existing) if kind == ProjectNode::RUNNING
-      existing
     end
 
     def tree_hash(parent_id:, second_parent_id:, kind:, name:, entries:)
@@ -96,7 +99,11 @@ module DbfsV2
     # HEAD of `branch` (or a specific node) as a ProjectState view: paths and
     # the live (or frozen) identity-rev of each file.
     def view(branch, node: nil)
-      n = node || branch.head_node
+      n = node
+      if n.nil?
+        hid = ProjectBranch.where(id: branch.id).pick(:head_node_id)
+        n = hid && ProjectNode.find_by(id: hid)
+      end
       entries = {}
       if n
         cbs = Branch.where(id: n.entries.where.not(content_branch_id: nil).select(:content_branch_id)).index_by(&:id)

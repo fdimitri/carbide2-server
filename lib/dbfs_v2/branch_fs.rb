@@ -128,14 +128,14 @@ module DbfsV2
       p = norm(path)
       return root_node(create: false) if p == '/'
       e = head_entries.find_by(path: p)
-      e && wrap(e)
+      e && wrap(e, source_node: current_head)
     end
 
     def find_any(path)
       p = norm(path)
       return root_node(create: false) if p == '/'
       if (e = head_entries.find_by(path: p))
-        return wrap(e, source_node: @branch.head_node)
+        return wrap(e, source_node: tip_node)
       end
       ghost = ancestor_entry_by_path(p)
       ghost && wrap(ghost[:entry], deleted: true, source_node: ghost[:node])
@@ -143,7 +143,7 @@ module DbfsV2
 
     def find_any_by_id(id)
       if (e = head_entries.find_by(file_node_id: id))
-        return wrap(e, source_node: @branch.head_node)
+        return wrap(e, source_node: tip_node)
       end
       ghost = ancestor_entry_by_id(id)
       ghost && wrap(ghost[:entry], deleted: true, source_node: ghost[:node])
@@ -201,6 +201,7 @@ module DbfsV2
       node = nil
       ActiveRecord::Base.transaction do
         lock_tip!
+        root_node(user_id: user_id)
         pending = []
         collect_missing_dirs!(File.dirname(p), pending, user_id)
         raise "destination already exists: #{p}" if live_path?(p, pending)
@@ -221,6 +222,7 @@ module DbfsV2
       return root_node(user_id: user_id) if p == '/'
       ActiveRecord::Base.transaction do
         lock_tip!
+        root_node(user_id: user_id)
         pending = []
         collect_missing_dirs!(File.dirname(p), pending, user_id)
         raise "destination already exists: #{p}" if live_path?(p, pending)
@@ -235,6 +237,7 @@ module DbfsV2
       p = norm(path)
       ActiveRecord::Base.transaction do
         lock_tip!
+        root_node(user_id: user_id)
         pending = []
         collect_missing_dirs!(File.dirname(p), pending, user_id)
         raise "destination already exists: #{p}" if live_path?(p, pending)
@@ -348,7 +351,7 @@ module DbfsV2
         collect_missing_dirs!(File.dirname(p), pending, user_id)
         clash = head_entries.find_by(path: p)
         raise "destination already exists: #{p}" if clash && clash.file_node_id != record.id
-        cb = (ftype == 'file') ? bind_line!(record, at: revision_id) : nil
+        cb = (ftype == 'file') ? bind_line!(record, at: revision_id, force_at: true) : nil
         if head_entries.exists?(file_node_id: record.id)
           commit_path_op!(add: pending, rewrite: { record.id => { path: p, ftype: ftype,
                                                                   content_branch_id: cb&.id, revision_id: nil } },
@@ -399,12 +402,13 @@ module DbfsV2
       end
     end
 
-    def bind_line!(record, at: nil)
+    def bind_line!(record, at: nil, force_at: false)
       cb = record.branches.find_by(name: @branch.name)
       if cb
         cb.update_columns(project_branch_id: @branch.id) unless cb.project_branch_id == @branch.id
-        if at && cb.head_revision_id.nil?
-          cb.update!(head_revision_id: at, origin_revision_id: at)
+        if at && (cb.head_revision_id.nil? || force_at)
+          cb.update!(head_revision_id: at)
+          cb.update_columns(origin_revision_id: at) if cb.origin_revision_id.nil? || force_at
         elsif at && cb.origin_revision_id.nil? && cb.head_revision_id == at
           cb.update_columns(origin_revision_id: at)
         end
@@ -418,8 +422,20 @@ module DbfsV2
 
     def norm(path) = @store.send(:normalize, path)
 
+    def tip_id
+      ProjectBranch.where(id: @branch.id).pick(:head_node_id)
+    end
+
+    def tip_node
+      hid = tip_id
+      hid && ProjectNode.find_by(id: hid)
+    end
+
+    def current_head = tip_node
+
     def head_entries
-      @branch.head_node&.entries || ProjectNodeEntry.none
+      hid = tip_id
+      hid ? ProjectNodeEntry.where(project_node_id: hid) : ProjectNodeEntry.none
     end
 
     def head_id_set
@@ -449,7 +465,7 @@ module DbfsV2
       return live unless include_tombstoned
       seen = live.map { |n| n.entry.file_node_id }.to_set
       extras = []
-      node = @branch.head_node&.parent
+      node = tip_node&.parent
       while node
         sql_children(node.entries, parent).each do |e|
           next if seen.include?(e.file_node_id)
@@ -482,7 +498,7 @@ module DbfsV2
       return [live, Set.new] unless include_tombstoned
       live_ids = live.map(&:file_node_id).to_set
       extra = []
-      n = @branch.head_node&.parent
+      n = tip_node&.parent
       while n
         n.entries.each do |e|
           next if live_ids.include?(e.file_node_id)
@@ -508,7 +524,7 @@ module DbfsV2
 
     def ancestor_entry_by_path(p)
       live_ids = head_id_set
-      node = @branch.head_node
+      node = tip_node
       while node
         e = node.entries.find_by(path: p)
         if e
@@ -521,7 +537,7 @@ module DbfsV2
     end
 
     def ancestor_entry_by_id(id)
-      node = @branch.head_node
+      node = tip_node
       while node
         e = node.entries.find_by(file_node_id: id)
         return { entry: e, node: node } if e

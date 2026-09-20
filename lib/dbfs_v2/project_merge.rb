@@ -79,6 +79,7 @@ module DbfsV2
         ProjectMergeRecord.create!(project_id: store.project_id, source: src, target: tgt, seq: store.seq,
                                    base_seq: base_seq, user_id: user_id, created_at: Time.current)
       end
+      [src, tgt, child].uniq.each(&:reload)
       result[:actions]   = applied.map { |a| wire(a) }
       result[:conflicts] = conflicts.map(&:to_h)
       result[:merged]    = conflicts.empty? && !dry_run
@@ -242,7 +243,7 @@ module DbfsV2
           applied << a.merge(from: from)
         when 'add'
           record = FileNode.find(a[:node])
-          cb = (a[:ftype] == 'file') ? fs.bind_line!(record, at: a[:revision]) : nil
+          cb = (a[:ftype] == 'file') ? fs.bind_line!(record, at: a[:revision], force_at: true) : nil
           add << { file_node_id: record.id, path: a[:path], ftype: a[:ftype], content_branch_id: cb&.id }
           fs.send(:collect_missing_dirs!, File.dirname(a[:path]), add, user_id)
           paths[a[:node]] = a[:path]
