@@ -51,13 +51,46 @@ class ProjectDagTest < Minitest::Test
                  'a content write does not append a project node'
   end
 
-  def test_two_identical_trees_agree_on_the_hash
-    rows = [{ file_node_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', path: '/f', ftype: 'file',
-              content_branch_id: nil, revision_id: nil }]
-    a = DbfsV2::ProjectDag.tree_hash(parent_id: nil, second_parent_id: nil, kind: 'running', name: nil, entries: rows)
-    b = DbfsV2::ProjectDag.tree_hash(parent_id: nil, second_parent_id: nil, kind: 'running', name: nil, entries: rows.reverse)
+  def test_two_identical_nodes_agree_on_the_hash
+    a = DbfsV2::ProjectDag.node_hash(parent_id: nil, second_parent_id: nil, kind: 'running',
+                                    name: nil, root_tree_id: 'abc')
+    b = DbfsV2::ProjectDag.node_hash(parent_id: nil, second_parent_id: nil, kind: 'running',
+                                    name: nil, root_tree_id: 'abc')
     assert_equal a, b
     assert_equal 64, a.size
+  end
+
+  def test_directory_hashes_are_order_independent
+    kids = [
+      { name: 'a', file_node_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', ftype: 'file',
+        child_tree_id: nil, revision_id: nil },
+      { name: 'b', file_node_id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', ftype: 'file',
+        child_tree_id: nil, revision_id: nil }
+    ]
+    assert_equal DbfsV2::ProjectDag.hash_tree(kids), DbfsV2::ProjectDag.hash_tree(kids.reverse)
+  end
+
+  def test_a_path_op_rewrites_only_the_dirty_spine
+    20.times { |i| @s.create_file("/wide/f#{i}.txt", content: i.to_s) }
+    trees_before = ProjectTree.count
+    entries_before = ProjectTreeEntry.count
+    @s.create_file('/wide/new.txt', content: 'n')
+    assert_equal 2, ProjectTree.count - trees_before, 'dirty /wide and its parent /'
+    # new /wide has 21 children; new / has one child (`wide`)
+    assert_equal 22, ProjectTreeEntry.count - entries_before
+    root = @s.main_branch.head_node.root_tree
+    assert_equal ['wide'], root.entries.order(:name).pluck(:name)
+  end
+
+  def test_fork_shares_the_running_tree
+    @s.create_file('/f', content: 'a')
+    @s.create_file('/g', content: 'b')
+    main_tree = @s.main_branch.head_node.root_tree_id
+    pb = @s.create_project_branch('feature')
+    assert_equal main_tree, pb.head_node.root_tree_id
+    cut = ProjectNode.find(pb.fork_node_id)
+    refute_equal main_tree, cut.root_tree_id
+    assert cut.snapshot?
   end
 
   def test_restore_walks_parents_and_puts_the_uuid_back

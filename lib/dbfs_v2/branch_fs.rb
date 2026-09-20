@@ -96,17 +96,16 @@ module DbfsV2
         pb = ProjectBranch.create!(project_id: store.project_id, name: name, forked_from: from, user_id: user_id)
         pb.update_columns(fork_seq: pb.seq, base_seq: pb.seq, base_branch_id: from.id)
         src_head = from.head_node
-        adds = []
-        src_head&.entries&.includes(:content_branch, :file_node)&.each do |e|
-          cb_id = nil
-          if e.ftype == 'file'
+        if src_head
+          ProjectDag.flatten(src_head).each do |e|
+            next unless e.ftype == 'file'
             at = e.content_branch&.head_revision_id || e.revision_id
-            cb_id = mint_fork_line!(e.file_node, pb, at).id
+            mint_fork_line!(e.file_node, pb, at)
           end
-          adds << { file_node_id: e.file_node_id, path: e.path, ftype: e.ftype, content_branch_id: cb_id }
-        end
-        if src_head || adds.any?
-          ProjectDag.advance!(pb, add: adds, parent: src_head, inherit: false, user_id: user_id)
+          # Share the parent's running trees. Content is the new lines
+          # resolved by (file_node, this project branch), not stored on the tree.
+          ProjectDag.insert!(pb, parent: src_head, kind: ProjectNode::RUNNING,
+                             root_tree_id: src_head.root_tree_id, user_id: user_id)
           pb.reload
         end
         cut = src_head && ProjectDag.freeze!(from)
@@ -127,14 +126,14 @@ module DbfsV2
     def find(path)
       p = norm(path)
       return root_node(create: false) if p == '/'
-      e = head_entries.find_by(path: p)
+      e = head_lookup(p)
       e && wrap(e, source_node: current_head)
     end
 
     def find_any(path)
       p = norm(path)
       return root_node(create: false) if p == '/'
-      if (e = head_entries.find_by(path: p))
+      if (e = head_lookup(p))
         return wrap(e, source_node: tip_node)
       end
       ghost = ancestor_entry_by_path(p)
@@ -142,7 +141,7 @@ module DbfsV2
     end
 
     def find_any_by_id(id)
-      if (e = head_entries.find_by(file_node_id: id))
+      if (e = head_lookup_id(id))
         return wrap(e, source_node: tip_node)
       end
       ghost = ancestor_entry_by_id(id)
@@ -158,7 +157,7 @@ module DbfsV2
     end
 
     def find_by_id(id)
-      e = head_entries.find_by(file_node_id: id)
+      e = head_lookup_id(id)
       e && wrap(e)
     end
 
@@ -259,7 +258,7 @@ module DbfsV2
       ActiveRecord::Base.transaction do
         lock_tip!
         rows = subtree(node.path)
-        commit_path_op!(remove_ids: rows.map(&:file_node_id), user_id: user_id)
+        commit_path_op!(remove_paths: [node.path], user_id: user_id)
         Events.record!(project_id, :deleted, event_rows(rows), user_id: user_id, branch: @branch)
       end
       find_any(path)
@@ -271,19 +270,30 @@ module DbfsV2
       return node unless node.deleted?
       ActiveRecord::Base.transaction do
         lock_tip!
-        raise "destination already exists: #{node.path}" if head_entries.where(path: node.path).exists?
+        raise "destination already exists: #{node.path}" if head_lookup(node.path)
         src = node.source_node
         raise "cannot restore #{path}: no ancestor" unless src
-        rows = src.entries.select { |e| e.path == node.path || e.path.start_with?("#{node.path}/") }
+        top = ProjectDag.lookup(src, node.path)
+        raise "cannot restore #{path}: no ancestor" unless top
+        rows = ProjectDag.subtree(src, node.path)
         live_ids = head_id_set
-        adds = rows.filter_map do |e|
-          next if live_ids.include?(e.file_node_id)
-          raise "destination already exists: #{e.path}" if head_entries.where(path: e.path).exists?
-          { file_node_id: e.file_node_id, path: e.path, ftype: e.ftype,
-            content_branch_id: e.content_branch_id, revision_id: nil }
+        pending = []
+        collect_missing_dirs!(File.dirname(node.path), pending, user_id)
+        clash = rows.find { |e| live_ids.include?(e.file_node_id) && e.file_node_id != top.file_node_id }
+        if top.ftype == 'folder' && clash.nil?
+          raise "destination already exists: #{top.path}" if live_path?(top.path, pending)
+          pending << { file_node_id: top.file_node_id, path: top.path, ftype: top.ftype,
+                       child_tree_id: top.child_tree_id }
+        else
+          rows.each do |e|
+            next if live_ids.include?(e.file_node_id)
+            raise "destination already exists: #{e.path}" if live_path?(e.path, pending)
+            pending << { file_node_id: e.file_node_id, path: e.path, ftype: e.ftype }
+          end
         end
-        commit_path_op!(add: adds, user_id: user_id)
-        Events.record!(project_id, :restored, event_rows_from(adds), user_id: user_id, branch: @branch)
+        commit_path_op!(add: pending, user_id: user_id)
+        Events.record!(project_id, :restored, event_rows(rows.reject { |e| live_ids.include?(e.file_node_id) }),
+                       user_id: user_id, branch: @branch)
       end
       find(path)
     end
@@ -300,14 +310,14 @@ module DbfsV2
         lock_tip!
         pending = []
         collect_missing_dirs!(File.dirname(to_path), pending, user_id)
-        clash = head_entries.find_by(path: to_path)
+        clash = head_lookup(to_path)
         raise "destination already exists: #{to_path}" if clash && clash.file_node_id != node.id
         rows = subtree(node.path)
-        rewrite = {}
+        # Descendants ride the reused child tree; only the moved node is rewritten.
+        rewrite = { node.id => { path: to_path } }
         renamed = rows.map do |e|
           old_path = e.path
           new_path = e.file_node_id == node.id ? to_path : "#{to_path}#{old_path.delete_prefix(node.path)}"
-          rewrite[e.file_node_id] = { path: new_path }
           { file_node_id: e.file_node_id, from_path: old_path, ftype: e.ftype, path: new_path }
         end
         commit_path_op!(add: pending, rewrite: rewrite, user_id: user_id)
@@ -349,15 +359,14 @@ module DbfsV2
         lock_tip!
         pending = []
         collect_missing_dirs!(File.dirname(p), pending, user_id)
-        clash = head_entries.find_by(path: p)
+        clash = head_lookup(p)
         raise "destination already exists: #{p}" if clash && clash.file_node_id != record.id
         cb = (ftype == 'file') ? bind_line!(record, at: revision_id, force_at: true) : nil
-        if head_entries.exists?(file_node_id: record.id)
-          commit_path_op!(add: pending, rewrite: { record.id => { path: p, ftype: ftype,
-                                                                  content_branch_id: cb&.id, revision_id: nil } },
+        if head_lookup_id(record.id)
+          commit_path_op!(add: pending, rewrite: { record.id => { path: p, ftype: ftype, revision_id: nil } },
                           user_id: user_id)
         else
-          pending << { file_node_id: record.id, path: p, ftype: ftype, content_branch_id: cb&.id }
+          pending << { file_node_id: record.id, path: p, ftype: ftype }
           commit_path_op!(add: pending, user_id: user_id)
         end
         Events.record!(project_id, :created, [{ file_node_id: record.id, path: p, ftype: ftype }],
@@ -367,13 +376,14 @@ module DbfsV2
     end
 
     def text_heads(node_ids: nil)
-      scope = head_entries.where(ftype: 'file').joins(:file_node)
-                          .where(file_nodes: { binary: false, symlink_target: nil })
-      scope = scope.where(file_node_id: node_ids) if node_ids
-      scope.left_joins(:content_branch)
-           .pluck('project_node_entries.file_node_id', 'project_node_entries.path',
-                  'branches.head_revision_id', 'project_node_entries.revision_id')
-           .map { |id, path, head, pin| [id, path, head || pin] }
+      rows = ProjectDag.flatten(tip_node).select { |e| e.ftype == 'file' }
+      rows = rows.select { |e| node_ids.include?(e.file_node_id) } if node_ids
+      nodes = FileNode.where(id: rows.map(&:file_node_id), binary: false, symlink_target: nil).index_by(&:id)
+      lines = ProjectDag.content_lines(nodes.keys, @branch)
+      rows.filter_map do |e|
+        next unless nodes[e.file_node_id]
+        [e.file_node_id, e.path, lines[e.file_node_id]&.head_revision_id || e.revision_id]
+      end
     end
 
     def content_of(node)
@@ -385,9 +395,11 @@ module DbfsV2
       [nil, e.revision_id]
     end
 
-    def commit_path_op!(add: [], remove_ids: [], rewrite: {}, second_parent: nil, inherit: true, user_id: nil)
-      ProjectDag.advance!(@branch, add: add, remove_ids: remove_ids, rewrite: rewrite,
-                          second_parent: second_parent, inherit: inherit, user_id: user_id)
+    def commit_path_op!(add: [], remove_ids: [], remove_paths: [], rewrite: {},
+                        second_parent: nil, inherit: true, user_id: nil)
+      ProjectDag.advance!(@branch, add: add, remove_ids: remove_ids, remove_paths: remove_paths,
+                          rewrite: rewrite, second_parent: second_parent, inherit: inherit, user_id: user_id)
+      @index_hid = nil
       @branch.reload
     end
 
@@ -396,10 +408,8 @@ module DbfsV2
     end
 
     def rewrites_for_move(from, to)
-      subtree(from).to_h do |e|
-        new_path = e.file_node_id && e.path == from ? to : "#{to}#{e.path.delete_prefix(from)}"
-        [e.file_node_id, { path: e.path == from ? to : "#{to}#{e.path.delete_prefix(from)}" }]
-      end
+      e = head_lookup(from)
+      e ? { e.file_node_id => { path: to } } : {}
     end
 
     def bind_line!(record, at: nil, force_at: false)
@@ -433,18 +443,34 @@ module DbfsV2
 
     def current_head = tip_node
 
-    def head_entries
+    def head_index
       hid = tip_id
-      hid ? ProjectNodeEntry.where(project_node_id: hid) : ProjectNodeEntry.none
+      return ProjectDag::Index.empty unless hid
+      if @index_hid != hid
+        @index_hid = hid
+        @index = ProjectDag::Index.new(ProjectNode.find(hid))
+      end
+      @index
+    end
+
+    def head_lookup(path)
+      n = tip_node
+      n && ProjectDag.lookup(n, path)
+    end
+
+    def head_lookup_id(id)
+      n = tip_node
+      n && ProjectDag.lookup_id(n, id)
     end
 
     def head_id_set
-      head_entries.pluck(:file_node_id).to_set
+      ProjectDag.flatten(tip_node).map(&:file_node_id).to_set
     end
 
     def lock_tip!
       @branch.lock!
       @branch.reload
+      @index_hid = nil
     end
 
     def root_node(create: true, user_id: nil)
@@ -458,16 +484,14 @@ module DbfsV2
       Node.new(entry.file_node, entry, self, deleted: deleted, source_node: source_node)
     end
 
-    def like_escape(s) = s.gsub('\\', '\\\\').gsub('%', '\\%').gsub('_', '\\_')
-
     def listed_children(parent, include_tombstoned:)
-      live = sql_children(head_entries, parent).map { |e| wrap(e) }
+      live = ProjectDag.children(tip_node, parent).map { |e| wrap(e) }
       return live unless include_tombstoned
       seen = live.map { |n| n.entry.file_node_id }.to_set
       extras = []
       node = tip_node&.parent
       while node
-        sql_children(node.entries, parent).each do |e|
+        ProjectDag.children(node, parent).each do |e|
           next if seen.include?(e.file_node_id)
           seen << e.file_node_id
           extras << wrap(e, deleted: true, source_node: node)
@@ -477,30 +501,22 @@ module DbfsV2
       (live + extras).sort_by { |n| n.path }
     end
 
-    def sql_children(scope, parent)
-      prefix = parent == '/' ? '/' : "#{parent}/"
-      scope.where("path LIKE ? ESCAPE '\\'", "#{like_escape(prefix)}%")
-           .where("position('/' in substr(path, ?)) = 0", prefix.length + 1)
-           .where.not(path: '/')
-           .order(:path)
-    end
-
     def subtree(path)
-      head_entries.where("path = ? OR path LIKE ? ESCAPE '\\'", path, "#{like_escape(path)}/%").order(:path).to_a
+      ProjectDag.subtree(tip_node, path)
     end
 
     def index_for_tree(node, include_tombstoned:)
       if node.deleted? && node.source_node
-        entries = node.source_node.entries.to_a
+        entries = ProjectDag.flatten(node.source_node)
         return [entries, entries.map(&:file_node_id).to_set]
       end
-      live = head_entries.to_a
+      live = ProjectDag.flatten(tip_node)
       return [live, Set.new] unless include_tombstoned
       live_ids = live.map(&:file_node_id).to_set
       extra = []
       n = tip_node&.parent
       while n
-        n.entries.each do |e|
+        ProjectDag.flatten(n).each do |e|
           next if live_ids.include?(e.file_node_id)
           live_ids << e.file_node_id
           extra << e
@@ -519,14 +535,14 @@ module DbfsV2
     end
 
     def live_path?(path, pending)
-      pending.any? { |r| r[:path] == path } || head_entries.where(path: path).exists?
+      pending.any? { |r| r[:path] == path } || !head_lookup(path).nil?
     end
 
     def ancestor_entry_by_path(p)
       live_ids = head_id_set
       node = tip_node
       while node
-        e = node.entries.find_by(path: p)
+        e = ProjectDag.lookup(node, p)
         if e
           return nil if live_ids.include?(e.file_node_id)
           return { entry: e, node: node }
@@ -539,7 +555,7 @@ module DbfsV2
     def ancestor_entry_by_id(id)
       node = tip_node
       while node
-        e = node.entries.find_by(file_node_id: id)
+        e = ProjectDag.lookup_id(node, id)
         return { entry: e, node: node } if e
         node = node.parent
       end
@@ -550,7 +566,7 @@ module DbfsV2
       p = norm(path)
       return if p == '/'
       return if pending.any? { |r| r[:path] == p }
-      if (e = head_entries.find_by(path: p))
+      if (e = head_lookup(p))
         raise "not a directory: #{p}" unless e.ftype == 'folder'
         return
       end

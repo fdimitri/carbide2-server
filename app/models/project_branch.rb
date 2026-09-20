@@ -21,7 +21,7 @@ class ProjectBranch < ApplicationRecord
   has_many :content_branches, class_name: 'Branch'
 
   def head_entries
-    head_node ? head_node.entries : ProjectNodeEntry.none
+    head_node ? head_node.entries : DbfsV2::ProjectDag::Index.empty
   end
 
   before_validation :assign_id, on: :create

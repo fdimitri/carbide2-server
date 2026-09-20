@@ -217,7 +217,7 @@ module DbfsV2
         when 'delete'
           node = store.find(a[:path], branch: b)
           next unless node && node.id == a[:node]
-          fs.ids_under(a[:path]).each { |id| remove_ids << id }
+          remove_ids << a[:node]
           paths.reject! { |_, p| p == a[:path] || p.start_with?("#{a[:path]}/") }
           applied << a
         when 'move'

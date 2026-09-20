@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_20_020000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_20_030000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -286,19 +286,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_20_020000) do
     t.index ["project_id", "seq"], name: "index_project_merges_on_project_id_and_seq"
   end
 
-  create_table "project_node_entries", force: :cascade do |t|
-    t.uuid "content_branch_id"
-    t.datetime "created_at", null: false
-    t.uuid "file_node_id", null: false
-    t.string "ftype", default: "file", null: false
-    t.string "path", null: false
-    t.string "project_node_id", limit: 64, null: false
-    t.uuid "revision_id"
-    t.datetime "updated_at", null: false
-    t.index ["project_node_id", "file_node_id"], name: "index_project_node_entries_node", unique: true
-    t.index ["project_node_id", "path"], name: "index_project_node_entries_path", unique: true
-  end
-
   create_table "project_nodes", id: { type: :string, limit: 64 }, force: :cascade do |t|
     t.datetime "created_at", null: false
     t.string "kind", default: "running", null: false
@@ -306,6 +293,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_20_020000) do
     t.string "parent_id", limit: 64
     t.uuid "project_branch_id", null: false
     t.bigint "project_id", null: false
+    t.string "root_tree_id", limit: 64
     t.string "second_parent_id", limit: 64
     t.datetime "updated_at", null: false
     t.bigint "user_id"
@@ -313,6 +301,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_20_020000) do
     t.index ["project_id", "kind"], name: "index_project_nodes_on_project_id_and_kind"
     t.index ["project_id", "name"], name: "index_project_nodes_snapshot_name", unique: true, where: "(((kind)::text = 'snapshot'::text) AND (name IS NOT NULL))"
     t.index ["project_id"], name: "index_project_nodes_on_project_id"
+    t.index ["root_tree_id"], name: "index_project_nodes_on_root_tree_id"
   end
 
   create_table "project_settings", force: :cascade do |t|
@@ -329,6 +318,25 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_20_020000) do
     t.integer "upload_max_entry_bytes"
     t.integer "upload_max_total_bytes"
     t.index ["project_id"], name: "index_project_settings_on_project_id", unique: true
+  end
+
+  create_table "project_tree_entries", force: :cascade do |t|
+    t.string "child_tree_id", limit: 64
+    t.datetime "created_at", null: false
+    t.uuid "file_node_id", null: false
+    t.string "ftype", default: "file", null: false
+    t.string "name", null: false
+    t.uuid "revision_id"
+    t.string "tree_id", limit: 64, null: false
+    t.datetime "updated_at", null: false
+    t.index ["child_tree_id"], name: "index_project_tree_entries_on_child_tree_id"
+    t.index ["tree_id", "file_node_id"], name: "index_project_tree_entries_node", unique: true
+    t.index ["tree_id", "name"], name: "index_project_tree_entries_name", unique: true
+  end
+
+  create_table "project_trees", id: { type: :string, limit: 64 }, force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
   end
 
   create_table "projects", force: :cascade do |t|

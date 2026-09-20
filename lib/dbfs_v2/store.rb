@@ -307,8 +307,9 @@ module DbfsV2
       [main_branch] + scope.where.not(name: Branch::MAIN).order(:seq, :name).to_a
     end
 
-    # Fork a project branch off `from` (default main): a full copy of its
-    # current entries, content pinned at their heads. See BranchFs.fork!.
+    # Fork a project branch off `from` (default main): a new running node
+    # sharing the parent's merkle tree, and a new content line per file at
+    # the parent's then-head. See BranchFs.fork!.
     def create_project_branch(name, from: Branch::MAIN, user_id: nil)
       parent = from.is_a?(ProjectBranch) ? from : project_branch(from)
       raise ArgumentError, "no project branch #{from}" unless parent
