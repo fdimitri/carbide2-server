@@ -1,9 +1,8 @@
 # frozen_string_literal: true
 require_relative 'dbfs_v2_test_helper'
 
-# ADR-042: a project state is (S, B). These pin the clock, the event log, the
-# branch reflog, resolution through a branch set, and the derived operations
-# (diff, contains?, merge base, snapshots).
+# The project clock, FileEvents as notifications, and the running-head view
+# (Store#state). Past trees are parent project-DAG nodes, not a seq fold.
 class ProjectStateTest < Minitest::Test
   include StoreTestHelpers
 
@@ -12,8 +11,6 @@ class ProjectStateTest < Minitest::Test
   end
 
   def ins(line, char, data) = d('insertDataSingleLine', { startLine: line, startChar: char, data: data })
-
-  # --- the clock -------------------------------------------------------------
 
   def test_every_revision_takes_the_next_seq_in_commit_order
     @s.create_file('/f', content: 'a')
@@ -35,8 +32,6 @@ class ProjectStateTest < Minitest::Test
     @s.write('/f', ins(0, 1, 'x'))
     assert_equal other.seq + 1, @s.seq
   end
-
-  # --- events ----------------------------------------------------------------
 
   def test_create_delete_restore_and_move_are_events_and_one_operation_is_one_seq
     @s.create_file('/dir/a.rb', content: 'a')
@@ -62,7 +57,6 @@ class ProjectStateTest < Minitest::Test
 
     @s.delete('/moved/sub')
     @s.delete('/moved')
-    # /moved/sub was already gone: the second delete records only what changed.
     last_op = ev.call('deleted').where('seq > ?', first_delete).maximum(:seq)
     assert_equal %w[/moved /moved/a.rb], ev.call('deleted').where(seq: last_op).pluck(:path).sort
   end
@@ -75,29 +69,17 @@ class ProjectStateTest < Minitest::Test
     assert_equal %w[created deleted created], FileEvent.where(file_node_id: n.id).order(:seq).pluck(:kind)
   end
 
-  # --- states ----------------------------------------------------------------
-
-  def test_state_at_a_cut_sees_only_what_existed_then
+  def test_state_is_the_running_head
     @s.create_file('/a', content: "A\n")
-    s1 = @s.seq
     @s.create_file('/b', content: "B\n")
     @s.write('/a', ins(1, 0, 'more'))
-    s2 = @s.seq
     @s.delete('/b')
     @s.move('/a', '/c')
-
-    st1 = @s.state(seq: s1)
-    assert_equal ['/a'], st1.paths
-    assert_equal "A\n", st1.read('/a')
-
-    st2 = @s.state(seq: s2)
-    assert_equal ['/a', '/b'], st2.paths
-    assert_equal "A\nmore", st2.read('/a')
 
     now = @s.state
     assert_equal ['/c'], now.paths
     assert_equal "A\nmore", now.read('/c')
-    assert_equal st2['/a'].file_node_id, now['/c'].file_node_id, 'a rename keeps identity'
+    assert_equal @s.find('/c').id, now['/c'].file_node_id
   end
 
   def test_a_deleted_folder_hides_its_subtree_and_empty_folders_carry_existence
@@ -111,45 +93,7 @@ class ProjectStateTest < Minitest::Test
     assert_equal ['/empty'], @s.state.paths
   end
 
-  def test_branch_set_resolves_per_file_and_falls_back_to_main
-    @s.create_file('/a', content: "a\n")
-    @s.create_file('/b', content: "b\n")
-    before_fork = @s.seq
-    @s.branch('/a', 'feature')
-    forked = @s.seq
-    @s.write('/a', ins(1, 0, 'feat'), branch: 'feature')
-    @s.write('/a', ins(0, 0, 'MAIN '))
-
-    st = @s.state(branch_set: 'feature')
-    assert_equal 'feature', st['/a'].branch
-    assert_equal 'main',    st['/b'].branch, '/b has no feature branch: main'
-    assert_equal "a\nfeat", st.read('/a')
-    assert_equal "b\n",     st.read('/b')
-
-    assert_equal "MAIN a\n", @s.state(branch_set: 'main').read('/a')
-
-    # Before the fork the branch did not exist: the set resolves to main.
-    assert_equal 'main', @s.state(seq: before_fork, branch_set: 'feature')['/a'].branch
-    # Just after the fork, before any write on it: its origin.
-    at_fork = @s.state(seq: forked, branch_set: 'feature')
-    assert_equal 'feature', at_fork['/a'].branch
-    assert_equal "a\n", at_fork.read('/a')
-  end
-
-  def test_overrides_pick_a_branch_for_one_file
-    @s.create_file('/a', content: "a\n")
-    @s.create_file('/b', content: "b\n")
-    @s.branch('/a', 'x')
-    @s.branch('/b', 'x')
-    @s.write('/a', ins(0, 0, 'X'), branch: 'x')
-    @s.write('/b', ins(0, 0, 'X'), branch: 'x')
-    st = @s.state(branch_set: { name: 'main', overrides: { @s.find('/a').id => 'x' } })
-    assert_equal "Xa\n", st.read('/a')
-    assert_equal "b\n",  st.read('/b')
-    assert_raises(ArgumentError) { DbfsV2::BranchSet.new('auto/anything') }
-  end
-
-  def test_fast_forward_moves_the_head_at_that_seq_via_the_reflog
+  def test_fast_forward_moves_the_live_head
     @s.create_file('/f', content: "1\n")
     @s.branch('/f', 'feature')
     @s.write('/f', ins(1, 0, '2'), branch: 'feature')
@@ -157,20 +101,16 @@ class ProjectStateTest < Minitest::Test
     before = @s.seq
     res = @s.merge('/f', target: 'main', source: 'feature')
     assert res[:merged]
-    assert_equal "1\n", @s.state(seq: before).read('/f'), 'before the fast-forward main is unchanged'
     now = @s.state
     assert_equal feat, now['/f'].revision_id, "main's head at now is the source head, though no revision was created"
     assert_equal "1\n2", now.read('/f')
     assert_equal before + 1, @s.seq, 'a fast-forward is a move of its own and ticks'
   end
 
-  # --- branch deletion is a tombstone ---------------------------------------
-
-  def test_deleting_a_branch_does_not_change_the_past_and_frees_the_name
+  def test_deleting_a_branch_frees_the_name
     @s.create_file('/f', content: "a\n")
     @s.branch('/f', 'feat')
     @s.write('/f', ins(1, 0, 'b'), branch: 'feat')
-    on_feat = @s.seq
     feat_head = head(@s, '/f', 'feat')
     @s.write('/f', ins(0, 0, 'M'))
 
@@ -180,13 +120,6 @@ class ProjectStateTest < Minitest::Test
     assert Revision.exists?(id: feat_head)
     assert_equal 'feat', Revision.find(feat_head).branch.name, 'the revision still knows which branch it was committed on'
 
-    # main at a cut before the deletion did not gain feat's revisions.
-    assert_equal "a\n", @s.state(seq: on_feat, branch_set: 'main').read('/f')
-    # a feat state before the deletion still resolves through feat ...
-    assert_equal "a\nb", @s.state(seq: on_feat, branch_set: 'feat').read('/f')
-    # ... and one after it falls back to main.
-    assert_equal 'main', @s.state(branch_set: 'feat')['/f'].branch
-    # The history graph keeps the label on feat's revisions but drops its head.
     condensed = @s.dag_condensed('/f')
     assert_equal ['main'], condensed[:heads].map { |h| h[:branch] }
     assert_includes condensed[:nodes].map { |n| n[:branch] }, 'feat'
@@ -197,8 +130,6 @@ class ProjectStateTest < Minitest::Test
     labels = @s.dag('/f')
     assert_equal ['main', 'feat'].sort, labels[:heads].map { |h| h[:branch] }.sort
   end
-
-  # --- comparing states ------------------------------------------------------
 
   def test_diff_is_keyed_by_identity
     @s.create_file('/a', content: "a\n")
@@ -216,39 +147,6 @@ class ProjectStateTest < Minitest::Test
     assert_equal [{ from: '/a', to: '/renamed' }], diff[:renamed].map { |r| r.slice(:from, :to) }
     assert_empty diff[:modified], 'the renamed file has the same revision; the modified one was removed'
   end
-
-  def test_contains_is_per_file_ancestry_plus_later_deletion
-    @s.create_file('/a', content: "a\n")
-    @s.create_file('/b', content: "b\n")
-    early = @s.state
-    @s.write('/a', ins(0, 0, 'A'))
-    @s.delete('/b')
-    late = @s.state
-    assert late.contains?(early)
-    refute early.contains?(late)
-    assert late.contains?(late)
-
-    @s.branch('/a', 'side')
-    @s.write('/a', ins(0, 0, 'S'), branch: 'side')
-    side = @s.state(branch_set: 'side')
-    refute @s.state.contains?(side), 'divergent content is not contained'
-    assert side.contains?(early), 'the side branch descends from the early main'
-  end
-
-  def test_merge_base_is_the_per_file_lca_and_need_not_have_existed
-    @s.create_file('/a', content: "a\n")
-    @s.create_file('/b', content: "b\n")
-    @s.branch('/a', 'feature')
-    @s.write('/a', ins(1, 0, 'F'), branch: 'feature')
-    @s.write('/a', ins(0, 0, 'M'))
-    @s.write('/b', ins(0, 0, 'B'))
-    base = DbfsV2::ProjectState.merge_base(@s.state(branch_set: 'main'), @s.state(branch_set: 'feature'))
-    assert_equal "a\n", base.read('/a'), 'the fork point'
-    assert_equal "Bb\n", base.read('/b'), 'same branch both sides: the shared head'
-    refute_equal base.to_h, @s.state(seq: 0).to_h
-  end
-
-  # --- names -----------------------------------------------------------------
 
   def test_snapshot_freezes_identity_revs_and_does_not_move_head
     @s.create_file('/a', content: "v1\n")

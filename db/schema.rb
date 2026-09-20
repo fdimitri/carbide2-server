@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_20_010000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_20_020000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -331,18 +331,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_20_010000) do
     t.index ["project_id"], name: "index_project_settings_on_project_id", unique: true
   end
 
-  create_table "project_snapshots", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
-    t.text "branch_set", null: false
-    t.datetime "created_at", null: false
-    t.text "manifest", null: false
-    t.string "name", null: false
-    t.bigint "project_id", null: false
-    t.bigint "seq", null: false
-    t.bigint "user_id"
-    t.index ["project_id", "name"], name: "index_project_snapshots_on_project_id_and_name", unique: true
-    t.index ["project_id", "seq"], name: "index_project_snapshots_on_project_id_and_seq"
-  end
-
   create_table "projects", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.text "description"
@@ -443,7 +431,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_20_010000) do
   add_foreign_key "project_memberships", "projects"
   add_foreign_key "project_memberships", "users"
   add_foreign_key "project_settings", "projects"
-  add_foreign_key "project_snapshots", "projects", on_delete: :cascade
   add_foreign_key "revisions", "branches", on_delete: :cascade
   add_foreign_key "revisions", "file_nodes", on_delete: :cascade
   add_foreign_key "terminal_recordings", "projects"

@@ -1,36 +1,23 @@
 # frozen_string_literal: true
 module DbfsV2
-  # ProjectMerge — merge project state (ADR-042).
+  # ProjectMerge — merge one project branch into its parent (or the reverse).
   #
-  # Two entry points:
+  # A three-way merge of the whole tree keyed by node identity: base is the
+  # child's fork/base node, ours the target's running head, theirs the
+  # source's. For each node the side that changed wins; both changing
+  # differently is a conflict the caller resolves:
   #
-  #   ProjectMerge.branches(store, source:, target:, ...)
-  #     A project branch into its parent, or the parent into the branch. A
-  #     three-way merge of the whole tree keyed by node identity: base is the
-  #     child's (base_branch, base_seq) — the parent at the fork, then the
-  #     source of the last merge between the two as it was then — ours the
-  #     target now, theirs the source now. For each
-  #     node the side that changed wins; both changing differently is a
-  #     conflict the caller resolves:
+  #   rename/rename      A -> B here, A -> C there
+  #   rename/delete      renamed here, deleted there (and the reverse)
+  #   delete/modify      deleted here, content changed there (and the reverse)
+  #   add/collision      added or renamed there onto a path a different
+  #                      node holds here
+  #   content            both changed the text and it does not auto-merge
   #
-  #       rename/rename      A -> B here, A -> C there
-  #       rename/delete      renamed here, deleted there (and the reverse)
-  #       delete/modify      deleted here, content changed there (and the reverse)
-  #       add/collision      added or renamed there onto a path a different
-  #                          node holds here
-  #       content            both changed the text and it does not auto-merge
-  #
-  #     `resolutions` is { node_id => { action: 'ours' | 'theirs' | 'path',
-  #     path: } } for identity conflicts (ours = leave the target as it is,
-  #     theirs = take the source's rename/delete, path = put it at this path
-  #     instead); content conflicts are resolved out of band with the per-file
-  #     merge tab (Store#merge with resolved:), after which they no longer
-  #     conflict here. Atomic: any unresolved conflict rolls everything back
-  #     and comes back in `conflicts`. `dry_run: true` plans and applies in a
-  #     transaction that always rolls back, so a preview is exact.
-  #
-  #   ProjectMerge.merge(store, target_set:, source_set:)
-  #     The older per-file BranchSet merge over main's tree (content only).
+  # `resolutions` is { node_id => { action: 'ours' | 'theirs' | 'path',
+  # path: } }. Content conflicts are resolved out of band with Store#merge.
+  # Atomic: any unresolved conflict rolls everything back. `dry_run: true`
+  # applies in a transaction that always rolls back.
   module ProjectMerge
     module_function
 
@@ -293,44 +280,6 @@ module DbfsV2
 
     def pb!(store, name)
       store.project_branch(name.to_s) or raise ArgumentError, "no project branch #{name}"
-    end
-
-    # --- per-file BranchSet merge (pre-project-branches) --------------------
-
-    def merge(store, target_set:, source_set:, user_id: nil)
-      target_set = BranchSet.wrap(target_set)
-      source_set = BranchSet.wrap(source_set)
-      raise ArgumentError, 'source and target branch sets are the same' if target_set == source_set
-
-      now = store.seq
-      t   = ProjectState.at(store, seq: now, branch_set: target_set)
-      s   = ProjectState.at(store, seq: now, branch_set: source_set)
-
-      work = s.files.filter_map do |e|
-        te = t.entries[e.file_node_id]
-        next if te.nil? || te.branch.nil? || e.branch.nil? || te.branch == e.branch
-        next if te.revision_id == e.revision_id
-        { path: e.path, target: te.branch, source: e.branch, source_head: e.revision_id }
-      end
-
-      files, unresolved = [], []
-      ActiveRecord::Base.transaction do
-        work.each do |w|
-          res = store.merge(w[:path], target: w[:target], source: w[:source], auto: true, user_id: user_id)
-          if res[:merged]
-            head = store.find(w[:path]).branches.find_by!(name: w[:target]).head_revision_id
-            files << w.slice(:path, :target, :source)
-                      .merge(action: head == w[:source_head] ? 'fast_forward' : 'auto')
-          elsif res[:reason] == 'already at source head'
-            next
-          else
-            unresolved << w.slice(:path, :target, :source).merge(reason: res[:reason], conflicts: res[:conflicts] || [])
-          end
-        end
-        raise ActiveRecord::Rollback if unresolved.any?
-      end
-
-      { merged: unresolved.empty?, seq: now, files: files, unresolved: unresolved }
     end
   end
 end

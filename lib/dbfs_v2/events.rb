@@ -1,14 +1,11 @@
 # frozen_string_literal: true
 module DbfsV2
-  # Events — the append-only existence/identity log (ADR-042).
+  # Events — notifications for a path op (explorer / seq clock).
   #
   # Store#create_*, #delete, #restore and #move each record one operation:
   # one Clock tick, one or more FileEvent rows sharing that seq (a subtree
-  # delete or a folder move is one operation, so no cut lands inside it).
-  #
-  # The fold (ProjectState) reads: the newest event with seq <= S decides
-  # whether the node exists (created/restored/renamed => yes, deleted => no)
-  # and what its path is.
+  # delete or a folder move is one operation). The project tree is the DAG,
+  # not a fold of these rows.
   module Events
     module_function
 

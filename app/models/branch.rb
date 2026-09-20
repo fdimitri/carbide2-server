@@ -11,8 +11,7 @@ class Branch < ApplicationRecord
   # ADR-042: a branch is born at a seq; a project state cut before it does not
   # see it. Inside the insert's transaction, like Revision#stamp_seq.
   before_create :stamp_seq
-  # Every head move is logged with a seq (the reflog): ProjectState reads
-  # "head of b at S" from it. Runs inside the save's transaction.
+  # Every head move is logged with a seq (the reflog).
   after_save :log_head
 
   validates :name, presence: true
@@ -30,13 +29,7 @@ class Branch < ApplicationRecord
     deleted_at.present?
   end
 
-  # Was this branch live at project seq S?
-  def live_at?(s)
-    seq <= s && (deleted_seq.nil? || deleted_seq > s)
-  end
-
-  # Tombstone (ADR-042): stamped so a state cut before the deletion still
-  # resolves through this branch.
+  # Tombstone: stamped so a later recreate can reuse the name.
   def tombstone!
     transaction do
       pid = FileNode.where(id: file_node_id).pick(:project_id)

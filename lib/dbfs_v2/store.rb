@@ -367,27 +367,21 @@ module DbfsV2
       fs.ensure_content_branch!(n) if n
     end
 
-    # --- project states (ADR-042) -------------------------------------------
+    # --- project clock / running head ---------------------------------------
 
     # The project clock: seq of the newest revision or filesystem event.
     def seq
       Clock.now(@project_id)
     end
 
-    # The project's tree. With no cut, this is the running head of `branch`
-    # (default main) — the authoritative backing store, not a fold. `seq:` /
-    # `branch_set:` still derive a per-file BranchSet cut for the older
-    # content-selection API.
-    def state(seq: nil, branch_set: Branch::MAIN, branch: nil)
-      if seq.nil? && branch_set == Branch::MAIN
-        pb = if branch
-               branch.is_a?(ProjectBranch) ? branch : (project_branch(branch) || main_branch)
-             else
-               main_branch
-             end
-        return ProjectDag.view(pb)
-      end
-      ProjectState.at(self, seq: seq || self.seq, branch_set: BranchSet.wrap(branch_set), branch: branch)
+    # The running head of `branch` (default main).
+    def state(branch: nil)
+      pb = if branch
+             branch.is_a?(ProjectBranch) ? branch : (project_branch(branch) || main_branch)
+           else
+             main_branch
+           end
+      ProjectDag.view(pb)
     end
 
     # Freeze the running head's identity-revs as a snapshot node. HEAD stays
@@ -403,14 +397,6 @@ module DbfsV2
 
     def snapshot(name)
       ProjectNode.snapshots.find_by(project_id: @project_id, name: name)
-    end
-
-    # Merge project branch `source` into `target`: every file where the two
-    # sets resolve to different branches is merged (fast-forward, else
-    # three-way auto-merge), atomically. See ProjectMerge.
-    def merge_project(target:, source:, user_id: nil)
-      ProjectMerge.merge(self, target_set: BranchSet.wrap(target), source_set: BranchSet.wrap(source),
-                               user_id: user_id)
     end
 
     # Unbound store (default branch main, `branch:` honoured). Binding a

@@ -116,8 +116,7 @@ module DbfsV2
           )
         end
       end
-      ProjectState.new(project_id: branch.project_id, seq: Clock.now(branch.project_id),
-                       branch_set: BranchSet.new(branch.name), entries: entries)
+      ProjectState.new(project_id: branch.project_id, entries: entries)
     end
 
     def same_entries?(a, b)
