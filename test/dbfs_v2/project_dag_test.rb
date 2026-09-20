@@ -52,12 +52,17 @@ class ProjectDagTest < Minitest::Test
   end
 
   def test_two_identical_nodes_agree_on_the_hash
+    bid = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
     a = DbfsV2::ProjectDag.node_hash(parent_id: nil, second_parent_id: nil, kind: 'running',
-                                    name: nil, root_tree_id: 'abc')
+                                    name: nil, root_tree_id: 'abc', project_branch_id: bid)
     b = DbfsV2::ProjectDag.node_hash(parent_id: nil, second_parent_id: nil, kind: 'running',
-                                    name: nil, root_tree_id: 'abc')
+                                    name: nil, root_tree_id: 'abc', project_branch_id: bid)
     assert_equal a, b
     assert_equal 64, a.size
+    other = DbfsV2::ProjectDag.node_hash(parent_id: nil, second_parent_id: nil, kind: 'running',
+                                        name: nil, root_tree_id: 'abc',
+                                        project_branch_id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb')
+    refute_equal a, other, 'project_branch_id is in the hash; trees still share, nodes do not'
   end
 
   def test_directory_hashes_are_order_independent
@@ -120,5 +125,33 @@ class ProjectDagTest < Minitest::Test
     frozen = cut.entries.find_by!(path: '/f')
     assert_equal "a\n", DbfsV2::Content.at(FileNode.find(frozen.file_node_id), frozen.revision_id)
     assert_equal "a\n", @s.read('/f', branch: 'feature')
+  end
+
+  def test_two_forks_do_not_share_a_project_node
+    @s.create_file('/f', content: 'a')
+    a = @s.create_project_branch('a')
+    b = @s.create_project_branch('b')
+    refute_equal a.head_node_id, b.head_node_id
+    assert_equal a.head_node.root_tree_id, b.head_node.root_tree_id
+    assert_equal a.id, a.head_node.project_branch_id
+    assert_equal b.id, b.head_node.project_branch_id
+  end
+
+  def test_first_freeze_cannot_share_trees_with_the_running_head
+    @s.create_file('/wide/f', content: 'x')
+    running = @s.main_branch.head_node.root_tree_id
+    snap = @s.snapshot!('s1')
+    refute_equal running, snap.root_tree_id
+  end
+
+  def test_a_second_freeze_reuses_unchanged_trees
+    @s.create_file('/wide/f', content: 'x')
+    first = @s.snapshot!('s1')
+    trees = ProjectTree.count
+    entries = ProjectTreeEntry.count
+    second = DbfsV2::ProjectDag.freeze!(@s.main_branch)
+    assert_equal first.root_tree_id, second.root_tree_id
+    assert_equal trees, ProjectTree.count
+    assert_equal entries, ProjectTreeEntry.count
   end
 end

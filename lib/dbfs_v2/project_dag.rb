@@ -11,6 +11,7 @@ module DbfsV2
   # A path op copies only the dirty spine (changed leaf + ancestor dirs).
   # Unchanged sibling directories keep their tree id. Content lines are not
   # stored on tree entries, so a fork shares the parent's running trees.
+  # Running nodes include project_branch_id in the hash; trees do not.
   module ProjectDag
     module_function
 
@@ -69,16 +70,20 @@ module DbfsV2
     end
 
     def snapshot!(branch, name: nil, user_id: nil, seq: nil)
-      head = branch.head_node
-      raise ArgumentError, 'nothing to snapshot' unless head
-      if name && ProjectNode.snapshots.where(project_id: branch.project_id, name: name).exists?
-        dummy = ProjectNode.new(project_id: branch.project_id, kind: ProjectNode::SNAPSHOT, name: name)
-        dummy.errors.add(:name, :taken)
-        raise ActiveRecord::RecordInvalid, dummy
+      ActiveRecord::Base.transaction do
+        branch.lock!
+        branch.reload
+        head = branch.head_node
+        raise ArgumentError, 'nothing to snapshot' unless head
+        if name && ProjectNode.snapshots.where(project_id: branch.project_id, name: name).exists?
+          dummy = ProjectNode.new(project_id: branch.project_id, kind: ProjectNode::SNAPSHOT, name: name)
+          dummy.errors.add(:name, :taken)
+          raise ActiveRecord::RecordInvalid, dummy
+        end
+        root = freeze_tree(head.root_tree_id, branch)
+        insert!(branch, parent: head, kind: ProjectNode::SNAPSHOT, name: name,
+                root_tree_id: root, user_id: user_id, seq: seq)
       end
-      root = freeze_tree(head.root_tree_id, branch)
-      insert!(branch, parent: head, kind: ProjectNode::SNAPSHOT, name: name,
-              root_tree_id: root, user_id: user_id, seq: seq)
     end
 
     # Unnamed snapshot of the running head. Used as a fork/merge-base cut so
@@ -91,7 +96,8 @@ module DbfsV2
     def insert!(branch, parent:, root_tree_id:, kind:, second_parent: nil, name: nil, user_id: nil, seq: nil)
       root_tree_id ||= put_tree!([])
       id = node_hash(parent_id: parent&.id, second_parent_id: second_parent&.id,
-                     kind: kind, name: name, root_tree_id: root_tree_id)
+                     kind: kind, name: name, root_tree_id: root_tree_id,
+                     project_branch_id: branch.id)
       now = Time.now.utc
       node = nil
       begin
@@ -112,8 +118,10 @@ module DbfsV2
       node
     end
 
-    def node_hash(parent_id:, second_parent_id:, kind:, name:, root_tree_id:)
-      Digest::SHA256.hexdigest("#{kind}\0#{parent_id}\0#{second_parent_id}\0#{name}\0#{root_tree_id}")
+    def node_hash(parent_id:, second_parent_id:, kind:, name:, root_tree_id:, project_branch_id:)
+      Digest::SHA256.hexdigest(
+        "#{kind}\0#{parent_id}\0#{second_parent_id}\0#{name}\0#{root_tree_id}\0#{project_branch_id}"
+      )
     end
 
     def hash_tree(entries)
@@ -179,10 +187,10 @@ module DbfsV2
       ProjectState.new(project_id: branch.project_id, entries: entries)
     end
 
-    # Latest running node on `branch` whose seq is ≤ `seq`. Walks the parent
-    # chain from HEAD so a hash-consed first node (shared id, first writer's
-    # project_branch_id) still counts. Stops before walking into the parent
-    # branch's history when this branch was born after `seq`.
+    # Latest running node on `branch` whose seq is ≤ `seq`. Walks HEAD's
+    # parent chain. Stops before walking into the parent branch when this
+    # branch was born after `seq`. Running nodes include `project_branch_id`
+    # in the hash, so two branches never share a node row.
     def node_at(branch, seq)
       seq = seq.to_i
       born = branch.seq.to_i
@@ -278,6 +286,11 @@ module DbfsV2
       end
     end
 
+    # Stamp each file's live head onto directory objects. Running entries
+    # have revision_id nil, so the first freeze cannot reuse those trees —
+    # every directory hashes differently. After that, put_tree! reuses any
+    # directory whose stamped children already exist. The walk is O(files);
+    # extra storage is only dirs that actually changed.
     def freeze_tree(root_tree_id, project_branch)
       rows = flatten_raw(root_tree_id)
       lines = content_lines(rows.filter_map { |r| r[:file_node_id] if r[:ftype] == 'file' }, project_branch)

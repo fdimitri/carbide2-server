@@ -56,6 +56,7 @@ module DbfsV2
 
       applied = []
       ActiveRecord::Base.transaction do
+        [tgt, src].sort_by(&:id).each(&:lock!)
         apply!(store, tgt, src, plan, ours.entries, applied, conflicts, user_id)
         raise ActiveRecord::Rollback if dry_run || conflicts.any?
         # What was merged in is now in both: the source's running head is

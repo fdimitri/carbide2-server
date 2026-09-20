@@ -19,6 +19,17 @@ class Branch < ApplicationRecord
 
   MAIN = 'main'
 
+  # A content-head move: FOR SHARE on the project branch (the same row path
+  # ops, snapshots, forks, and merges lock FOR UPDATE), then FOR UPDATE on
+  # this line. A freeze then waits for in-flight content commits; a content
+  # write waits for an in-flight freeze. Two content writers still SHARE
+  # together.
+  def self.lock_head!(id)
+    pb_id = unscoped.where(id: id).pick(:project_branch_id)
+    ProjectBranch.lock("FOR SHARE").find(pb_id) if pb_id
+    lock.find(id)
+  end
+
   # A deleted branch keeps its row (revisions.branch_id must keep meaning "the
   # branch this was committed on", or a past project state changes — ADR-042).
   # It is hidden from lookups by FileNode#branches, and its name is reusable.

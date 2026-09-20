@@ -152,10 +152,11 @@ A directory is a content-addressed object:
 - `project_tree_entries` are **basenames**. Folders carry `child_tree_id`;
   snapshot files carry `revision_id`. No `content_branch_id` — forks could not
   share trees if the line id lived on the entry.
-- A project node is `kind`, parents, optional `name`, `root_tree_id`, and
-  `seq` (the clock at insert). Its id is SHA-256 of kind/parents/name/root —
-  **seq is out of the hash**, so two writers of the same tree still hash-cons;
-  `S` still names when this row was born.
+- A project node is `kind`, parents, optional `name`, `root_tree_id`,
+  `project_branch_id`, and `seq` (the clock at insert). Its id is SHA-256 of
+  kind/parents/name/root/**branch** — **seq is out of the hash**. Trees still
+  share across branches; running nodes do not. Two writers of the same tree
+  on the same branch still hash-cons; `S` names when this row was born.
 
 A path op copy-on-writes only the **dirty spine** (changed leaf + ancestor
 dirs). Unchanged sibling directories keep their tree id. A folder move/delete
@@ -179,10 +180,17 @@ root -> wide
 note: "add /wide/new.txt\n→ new T_wide' and new root'\nT_wide remains; README's entry is copied into root'"
 ```
 
-Fork: mint a new per-file `Branch` at the parent's then-head (O(files),
-unavoidable), then a new running node with the **same** `root_tree_id`. The
-child does not share the parent's line and does not follow later parent
-edits. Snapshot/freeze rebuilds trees with stamped revs (O(N) once, accepted).
+Fork shares the parent's running `root_tree_id`. The requirement is that the
+child does not follow later parent edits. This implementation mints a new
+per-file `Branch` at the parent's then-head (eager, O(files)). Lazy lines —
+absent until first write, content read from the freeze — also satisfy that;
+eager minting is not the requirement.
+
+A freeze **walk** is O(files): it must read every live line to stamp
+`revision_id`. The first freeze cannot share directory objects with the
+running tree (running entries have `revision_id` nil; snapshot entries do
+not). After that, `put_tree!` reuses any directory whose stamped children
+already exist. O(N) is the walk, not the storage.
 
 A full-flat copy of every path onto every running node is rejected: `cp` of 5
 files in a 10k-file project must not insert ~50k rows.
@@ -273,7 +281,8 @@ for moves) is a different surface and is not built.
 - A project revision is a stored, hashed node. Provenance is a node id; a
   named snapshot is a frozen tree hanging off a running head.
 - Path ops pay for the dirty spine, not the whole project. Forks share running
-  trees.
+  trees; they do not share running **nodes** (`project_branch_id` is in the
+  node hash).
 - Rename and delete are history: parent nodes still hold the old binding;
   HEAD does not. Recreate keeps the UUID.
 - Main's path index is the same mechanism as every other project branch.
@@ -281,10 +290,19 @@ for moves) is a different surface and is not built.
 
 **Negative / constraints**
 
-- The clock row still serializes every write in a project. Writes are batches,
-  not keystrokes; the lock is the stronger ordering ADR-041 already requires.
-- Freeze/snapshot and minting fork lines are O(files) once. That is accepted.
-  Running path ops must not be.
+- The clock row still serializes seq assignment. Writes are batches, not
+  keystrokes; the lock is the stronger ordering ADR-041 already requires.
+- Content writes take `FOR SHARE` on the **project branch** row. Path ops,
+  snapshots, forks, and merges take `FOR UPDATE` on that same row. A freeze
+  then waits for in-flight content commits; a content write waits for an
+  in-flight freeze. Locking the per-file line alone does not close the
+  snapshot race (freeze and a content write would never touch the same row).
+- A freeze walk is O(files). The first freeze rewrites every directory
+  (stamped `revision_id` vs running nil). Later freezes reuse unchanged
+  subtrees via `put_tree!`. O(N) is the walk, not the storage. Running path
+  ops must not be O(files).
+- This implementation mints a line per file at fork. That is one way to keep
+  the child from following the parent; lazy-from-freeze is another.
 - `branch_entries` remains in the schema from the first index; it is not the
   tree. The live index is `head_node.root_tree_id`.
 - `write_blob` still has no `MAX_BLOB_BYTES` guard (decisions #26). Ingest and
@@ -294,7 +312,7 @@ for moves) is a different surface and is not built.
 
 ```text
 tree_id = SHA256( "tree\n" + sort_by name: name, file_node_id, ftype, child_tree_id, revision_id )
-node_id = SHA256( kind, parent_id, second_parent_id, name, root_tree_id )
+node_id = SHA256( kind, parent_id, second_parent_id, name, root_tree_id, project_branch_id )
 # project_nodes.seq is stored on the row, not in node_id
 ```
 
@@ -320,11 +338,12 @@ Server (`DbfsV2`):
 
 - Clock, `file_events`, `branch_heads`; revisions and branches stamped with
   `seq`; tombstones; `ProjectGraph`.
-- `project_nodes` (`kind` running|snapshot, parents, `root_tree_id`, `seq`),
+- `project_nodes` (`kind` running|snapshot, parents, `root_tree_id`,
+  `project_branch_id` in the hash, `seq` out of it),
   `project_trees` / `project_tree_entries`; `ProjectDag` (dirty-spine builder,
   `view(seq:)`, `node_at`, `lookup` / `flatten`, freeze/snapshot); `BranchFs`;
   `Store#state(branch:, seq:)`, `#snapshot!`. Path-op FileEvents reuse the
-  node's seq.
+  node's seq. Content writes `FOR SHARE` the project branch row.
 - `project_branches` (`head_node_id`, `fork_node_id`, `base_node_id`);
   `ProjectMerge.branches`; `adopt!`; `BranchView`.
 - Identity slot `/.nodes/<uuid>`; PROTOCOL 12 document key.
@@ -376,7 +395,10 @@ Client: workspace branch; explorer event-only patch; tabs keyed by
   every directory (or the child would inherit the parent's line ids). Running
   content is resolved by project-branch membership so trees can be shared.
 - **Overlay that reads through to `main` for untouched files.** Rejected: the
-  child would move when `main` did. Fork freezes the cut.
+  child would move when `main` did. Fork freezes the cut so the child does
+  not follow later parent edits. Eager per-file lines at fork are one
+  implementation of that; lazy lines that read the freeze until first write
+  are another.
 - **HEAD moves onto a snapshot.** Rejected: a snapshot hangs off the running
   head; content writes must keep landing on the live lines.
 - **Branch names as identity.** Rejected: reuse would attach old history. UUIDs

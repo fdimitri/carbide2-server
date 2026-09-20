@@ -14,9 +14,10 @@ class ProjectNode < ApplicationRecord
   belongs_to :second_parent, class_name: 'ProjectNode', optional: true
   belongs_to :root_tree, class_name: 'ProjectTree', optional: true
 
-  # `seq` is the project clock at insert. It is not part of the node id:
-  # the hash is kind/parents/name/root_tree_id. Same tree hash-conses;
-  # S still names when this row was born.
+  # `seq` is the project clock at insert and is not part of the node id.
+  # The hash is kind/parents/name/root_tree_id/project_branch_id: trees
+  # still share across branches; running nodes do not. Same tree on the
+  # same branch still hash-conses; S names when this row was born.
 
   scope :running,   -> { where(kind: RUNNING) }
   scope :snapshots, -> { where(kind: SNAPSHOT) }

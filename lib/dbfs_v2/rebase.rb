@@ -33,7 +33,7 @@ module DbfsV2
       target = node.branches.find_by!(name: branch)
 
       ActiveRecord::Base.transaction do
-        locked = Branch.lock.find(target.id)
+        locked = Branch.lock_head!(target.id)
         concurrent = concurrent_since(node, base_id, locked.head_revision_id)
         raise ConflictError, "base #{base_id} is not in #{node.path}'s history on #{branch}" if concurrent.nil?
 

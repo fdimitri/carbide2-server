@@ -88,12 +88,15 @@ module DbfsV2
 
     # --- fork ---------------------------------------------------------------
 
-    # A new project branch off `from`. Each file gets a new content line at
-    # the parent's current head — a new line, not a shared pointer that
-    # drifts with the parent.
+    # A new project branch off `from`. The child must not follow later parent
+    # edits. This implementation mints a new per-file line at the parent's
+    # then-head (eager). Lazy lines — absent until first write, content from
+    # the freeze — also satisfy that; they are not required.
     def self.fork!(store, name, from:, user_id: nil)
       raise ArgumentError, "bad branch name #{name.inspect}" if name.to_s.empty? || name == ProjectBranch::MAIN
       ActiveRecord::Base.transaction do
+        from.lock!
+        from.reload
         pb = ProjectBranch.create!(project_id: store.project_id, name: name, forked_from: from, user_id: user_id)
         pb.update_columns(fork_seq: pb.seq, base_seq: pb.seq, base_branch_id: from.id)
         src_head = from.head_node
@@ -470,6 +473,8 @@ module DbfsV2
     end
 
     def lock_tip!
+      # FOR UPDATE on this project branch. Content writes take FOR SHARE on
+      # the same row, so a path op / freeze waits for in-flight commits.
       @branch.lock!
       @branch.reload
       @index_hid = nil

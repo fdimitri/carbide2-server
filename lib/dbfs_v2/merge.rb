@@ -38,7 +38,7 @@ module DbfsV2
       # by moving the head past it.
       aborted = false
       ActiveRecord::Base.transaction do
-        locked = Branch.lock.find(target.id)
+        locked = Branch.lock_head!(target.id)
         if fast_forward?(file_node, locked.head_revision_id, source.head_revision_id)
           locked.update!(head_revision_id: source.head_revision_id)
         else
@@ -75,7 +75,7 @@ module DbfsV2
       # Lock the target branch row: the head read + revision insert + head
       # update must be atomic, or two concurrent merges/writes fork the head.
       rev = ActiveRecord::Base.transaction do
-        locked = Branch.lock.find(target.id)
+        locked = Branch.lock_head!(target.id)
         if locked.head_revision_id != expected
           raise ConflictError,
                 "target branch '#{target_name}' advanced while resolving; re-resolve"
@@ -230,7 +230,7 @@ module DbfsV2
         # so a concurrent write can't be orphaned by the auto-FF.
         aborted = false
         ActiveRecord::Base.transaction do
-          locked = Branch.lock.find(target.id)
+          locked = Branch.lock_head!(target.id)
           if fast_forward?(file_node, locked.head_revision_id, source.head_revision_id)
             locked.update!(head_revision_id: source.head_revision_id)
           else
@@ -268,7 +268,7 @@ module DbfsV2
       # against the new head. (Mirrors the re-check in fast_forward!.)
       aborted = false
       rev = ActiveRecord::Base.transaction do
-        locked = Branch.lock.find(target.id)
+        locked = Branch.lock_head!(target.id)
         if locked.head_revision_id != target.head_revision_id
           aborted = true
           nil
@@ -301,7 +301,7 @@ module DbfsV2
       result = nil
       begin
         ActiveRecord::Base.transaction do
-          locked = Branch.lock.find(target.id)
+          locked = Branch.lock_head!(target.id)
           if locked.head_revision_id != target.head_revision_id
             aborted = true
             next

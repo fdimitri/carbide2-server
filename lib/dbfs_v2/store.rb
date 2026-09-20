@@ -198,13 +198,14 @@ module DbfsV2
         delta.validate_against!(base_buf)
       end
 
-      # Serialize writers on the branch row so the head read + revision insert +
-      # head update are atomic. Without this, two writers that both claim
+      # Serialize writers on the per-file line, and take FOR SHARE on the
+      # project branch so a freeze (FOR UPDATE on that same row) waits for
+      # this commit. Without the line lock, two writers that both claim
       # base == head fork off the same parent and the later update! silently
-      # wins (lost update). The lock forces the loser to re-read the winner's
-      # head and parent/transform against it.
+      # wins (lost update). The line lock forces the loser to re-read the
+      # winner's head and parent/transform against it.
       ActiveRecord::Base.transaction do
-        locked = Branch.lock.find(b.id)
+        locked = Branch.lock_head!(b.id)
         if base.nil? || base == locked.head_revision_id
           [append!(node, locked, delta, user_id: user_id)]
         else
@@ -224,7 +225,7 @@ module DbfsV2
       # Same atomic head-read + insert + head-update as write(); prevents two
       # concurrent blobs from forking off the same head and losing a revision.
       ActiveRecord::Base.transaction do
-        locked = Branch.lock.find(b.id)
+        locked = Branch.lock_head!(b.id)
         write_blob_on(node, locked, bytes, user_id: user_id)
       end
     end
@@ -308,8 +309,8 @@ module DbfsV2
     end
 
     # Fork a project branch off `from` (default main): a new running node
-    # sharing the parent's merkle tree, and a new content line per file at
-    # the parent's then-head. See BranchFs.fork!.
+    # sharing the parent's merkle tree. The child does not follow later
+    # parent edits. See BranchFs.fork!.
     def create_project_branch(name, from: Branch::MAIN, user_id: nil)
       parent = from.is_a?(ProjectBranch) ? from : project_branch(from)
       raise ArgumentError, "no project branch #{from}" unless parent
@@ -659,7 +660,7 @@ module DbfsV2
       raise "not a binary file: #{path}" unless node.binary?
       b = node.branches.find_by!(name: bname)
       ActiveRecord::Base.transaction do
-        locked = Branch.lock.find(b.id)
+        locked = Branch.lock_head!(b.id)
         head = locked.head_revision_id && Revision.find_by(id: locked.head_revision_id)
         if head && head.change_type == 'writeBinary' && head.payload['sha256'] == digest
           next nil # no-op: head already is this content
