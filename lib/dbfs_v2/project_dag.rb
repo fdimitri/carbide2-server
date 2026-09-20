@@ -32,6 +32,27 @@ module DbfsV2
       ORDER BY path
     SQL
 
+    CHAIN_SQL = <<~SQL.freeze
+      WITH RECURSIVE chain AS (
+        SELECT id, parent_id, second_parent_id, project_branch_id, seq, kind, name
+        FROM project_nodes
+        WHERE id = ?
+        UNION ALL
+        SELECT n.id, n.parent_id, n.second_parent_id, n.project_branch_id, n.seq, n.kind, n.name
+        FROM project_nodes n
+        INNER JOIN chain c ON n.id = c.parent_id
+      )
+      SELECT id, parent_id, second_parent_id, project_branch_id, seq, kind, name
+      FROM chain
+    SQL
+
+    REVISIONS_AT_SQL = <<~SQL.freeze
+      SELECT DISTINCT ON (branch_id) branch_id, revision_id
+      FROM branch_heads
+      WHERE branch_id IN (?) AND seq <= ?
+      ORDER BY branch_id, seq DESC
+    SQL
+
     def advance!(branch, add: [], remove_ids: [], remove_paths: [], rewrite: {},
                  second_parent: nil, parent: nil, inherit: true, user_id: nil)
       parent ||= branch.head_node
@@ -169,12 +190,13 @@ module DbfsV2
       if n
         rows = flatten(n)
         lines = content_lines(rows.map(&:file_node_id), n.snapshot? ? n.project_branch : branch)
+        revs = (!n.snapshot? && seq) ? revisions_at(lines.values.map(&:id), seq) : nil
         rows.each do |e|
           cb = lines[e.file_node_id]
           rev = if n.snapshot?
                   e.revision_id
-                elsif seq
-                  revision_at(cb, seq) || e.revision_id
+                elsif revs
+                  (cb && revs[cb.id.to_s]) || e.revision_id
                 else
                   cb&.head_revision_id || e.revision_id
                 end
@@ -208,7 +230,25 @@ module DbfsV2
 
     def revision_at(content_branch, seq)
       return nil unless content_branch
-      BranchHead.where(branch_id: content_branch.id, seq: ..seq.to_i).order(seq: :desc).limit(1).pick(:revision_id)
+      revisions_at([content_branch.id], seq)[content_branch.id.to_s]
+    end
+
+    # One query: each content line's identity-rev at clock `seq`.
+    def revisions_at(branch_ids, seq)
+      ids = Array(branch_ids).compact.uniq
+      return {} if ids.empty?
+      sql = ActiveRecord::Base.sanitize_sql_array([REVISIONS_AT_SQL, ids, seq.to_i])
+      ActiveRecord::Base.connection.select_all(sql).each_with_object({}) do |r, h|
+        h[r['branch_id'].to_s] = r['revision_id']
+      end
+    end
+
+    # First-parent chain from HEAD to genesis, oldest first. One recursive query.
+    def first_parent_chain(branch)
+      hid = branch.head_node_id || ProjectBranch.where(id: branch.id).pick(:head_node_id)
+      return [] unless hid
+      sql = ActiveRecord::Base.sanitize_sql_array([CHAIN_SQL, hid])
+      ActiveRecord::Base.connection.select_all(sql).to_a.reverse
     end
 
     def lookup(node, path)

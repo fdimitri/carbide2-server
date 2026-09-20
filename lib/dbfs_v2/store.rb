@@ -383,19 +383,64 @@ module DbfsV2
       ProjectDag.view(resolve_project_branch(branch), seq: seq)
     end
 
-    # Slider domain for the identity visualizer (PROTOCOL 13). `ticks` are
-    # running nodes on this branch, oldest first (one public path op each).
-    # `marks` are named snapshots hanging off this branch — they are not ticks;
-    # HEAD does not land on them.
+    # Slider domain for the identity visualizer. First-parent chain from HEAD
+    # to genesis, grouped into segments by the branch that owns each running
+    # node. "This branch only" is the last segment; ancestry is all of them.
+    # Marks: named snapshots on a segment, a fork at each segment boundary,
+    # a merge for a second parent. HEAD does not land on snapshots.
     def identity_axis(branch: Branch::MAIN)
       pb = resolve_project_branch(branch)
-      ticks = ProjectNode.running.where(project_branch_id: pb.id).order(:seq).map { |n|
-        { seq: n.seq, node_id: n.id }
-      }
-      marks = ProjectNode.snapshots.where(project_branch_id: pb.id).where.not(name: nil).order(:seq).map { |n|
-        { seq: n.seq, node_id: n.id, name: n.name }
-      }
-      { branch: pb.name, ticks: ticks, marks: marks }
+      running = ProjectDag.first_parent_chain(pb).select { |r| r['kind'] == ProjectNode::RUNNING }
+      groups = []
+      running.each do |r|
+        bid = r['project_branch_id'].to_s
+        if groups.empty? || groups.last[:id] != bid
+          groups << { id: bid, nodes: [r] }
+        else
+          groups.last[:nodes] << r
+        end
+      end
+      names = ProjectBranch.where(id: groups.map { |g| g[:id] }).pluck(:id, :name)
+                           .to_h.transform_keys(&:to_s)
+
+      sp_ids = running.map { |r| r['second_parent_id'] }.compact.uniq
+      sp_branch = {}
+      if sp_ids.any?
+        ProjectNode.where(id: sp_ids).pluck(:id, :project_branch_id).each do |id, bid|
+          sp_branch[id.to_s] = bid.to_s
+        end
+        extra = sp_branch.values - names.keys
+        names.merge!(ProjectBranch.where(id: extra).pluck(:id, :name).to_h.transform_keys(&:to_s)) if extra.any?
+      end
+
+      chain_ids = running.map { |r| r['id'] }
+      snaps_by_pb = Hash.new { |h, k| h[k] = [] }
+      if groups.any? && chain_ids.any?
+        ProjectNode.snapshots.where(project_branch_id: groups.map { |g| g[:id] })
+                   .where.not(name: nil).where(parent_id: chain_ids).order(:seq).each do |n|
+          snaps_by_pb[n.project_branch_id.to_s] << n
+        end
+      end
+
+      segments = groups.map.with_index do |g, i|
+        ticks = g[:nodes].map { |n| { seq: n['seq'].to_i, node_id: n['id'] } }
+        marks = []
+        if i.positive?
+          first = g[:nodes].first
+          marks << { seq: first['seq'].to_i, node_id: first['id'], kind: 'fork',
+                     from: names[groups[i - 1][:id]] }
+        end
+        g[:nodes].each do |n|
+          next if n['second_parent_id'].blank?
+          from_id = sp_branch[n['second_parent_id'].to_s]
+          marks << { seq: n['seq'].to_i, node_id: n['id'], kind: 'merge', from: names[from_id] }
+        end
+        snaps_by_pb[g[:id]].each do |n|
+          marks << { seq: n.seq, node_id: n.id, kind: 'snapshot', name: n.name }
+        end
+        { branch: names[g[:id]], ticks: ticks, marks: marks.sort_by { |m| m[:seq] } }
+      end
+      { branch: pb.name, segments: segments }
     end
 
     # Tree + FileEvents at clock `seq` on `branch`. `entries` are flat

@@ -254,10 +254,14 @@ class ProjectStateTest < Minitest::Test
     @s.snapshot!('cut')
     axis = @s.identity_axis
     assert_equal 'main', axis[:branch]
-    assert_equal [first.seq, second.seq], axis[:ticks].map { |t| t[:seq] }
-    assert_equal [first.id, second.id], axis[:ticks].map { |t| t[:node_id] }
-    assert_equal ['cut'], axis[:marks].map { |m| m[:name] }
-    refute_includes axis[:ticks].map { |t| t[:node_id] }, axis[:marks].first[:node_id]
+    assert_equal 1, axis[:segments].size
+    seg = axis[:segments][0]
+    assert_equal 'main', seg[:branch]
+    assert_equal [first.seq, second.seq], seg[:ticks].map { |t| t[:seq] }
+    assert_equal [first.id, second.id], seg[:ticks].map { |t| t[:node_id] }
+    snap = seg[:marks].find { |m| m[:kind] == 'snapshot' }
+    assert_equal 'cut', snap[:name]
+    refute_includes seg[:ticks].map { |t| t[:node_id] }, snap[:node_id]
   end
 
   def test_identity_at_is_the_tree_and_events_at_that_seq
@@ -284,16 +288,45 @@ class ProjectStateTest < Minitest::Test
     assert_equal '/dir/f.txt', moved[:events].find { |e| e[:file_node_id] == n.id }[:from_path]
   end
 
-  def test_identity_axis_on_a_fork_is_that_branch_only
+  def test_identity_axis_segments_are_first_parent_and_this_branch_is_the_last
+    @s.create_file('/f', content: 'a')
+    main_before = @s.main_branch.head_node
+    @s.create_project_branch('feature')
+    @s.create_file('/only-main', content: 'x')
+    main_after = @s.main_branch.head_node
+    @s.create_file('/g', content: 'b', branch: 'feature')
+    feat = @s.identity_axis(branch: 'feature')
+    assert_equal 'feature', feat[:branch]
+    assert_equal %w[main feature], feat[:segments].map { |s| s[:branch] }
+
+    main_seg, feat_seg = feat[:segments]
+    assert_includes main_seg[:ticks].map { |t| t[:node_id] }, main_before.id
+    refute_includes main_seg[:ticks].map { |t| t[:node_id] }, main_after.id
+    assert feat_seg[:ticks].size >= 1
+    fork = feat_seg[:marks].find { |m| m[:kind] == 'fork' }
+    assert_equal 'main', fork[:from]
+    assert_equal feat_seg[:ticks].first[:seq], fork[:seq]
+
+    last = feat_seg[:ticks].last
+    g = @s.identity_at(seq: last[:seq], branch: 'feature')
+    assert g[:entries].any? { |e| e[:path] == '/g' }
+    ancestral = main_seg[:ticks].last
+    at_main = @s.identity_at(seq: ancestral[:seq], branch: 'main')
+    refute at_main[:entries].any? { |e| e[:path] == '/g' }
+    assert_empty @s.identity_at(seq: ancestral[:seq], branch: 'feature')[:entries]
+  end
+
+  def test_identity_axis_merge_is_a_mark_not_a_segment
     @s.create_file('/f', content: 'a')
     @s.create_project_branch('feature')
     @s.create_file('/g', content: 'b', branch: 'feature')
-    main = @s.identity_axis
-    feat = @s.identity_axis(branch: 'feature')
-    refute_equal main[:ticks].map { |t| t[:node_id] }, feat[:ticks].map { |t| t[:node_id] }
-    assert feat[:ticks].size >= 1
-    g = @s.identity_at(seq: feat[:ticks].last[:seq], branch: 'feature')
-    assert g[:entries].any? { |e| e[:path] == '/g' }
-    refute @s.identity_at(seq: main[:ticks].last[:seq])[:entries].any? { |e| e[:path] == '/g' }
+    r = @s.merge_branches(source: 'feature')
+    assert r[:merged], r.inspect
+    axis = @s.identity_axis
+    assert_equal ['main'], axis[:segments].map { |s| s[:branch] }
+    merge = axis[:segments].last[:marks].find { |m| m[:kind] == 'merge' }
+    assert merge, 'expected a merge mark on main'
+    assert_equal 'feature', merge[:from]
+    refute axis[:segments].any? { |s| s[:branch] == 'feature' }
   end
 end
