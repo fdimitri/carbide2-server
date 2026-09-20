@@ -56,23 +56,26 @@ module DbfsV2
       now  = store.seq
       base_seq    = child.base_seq || child.fork_seq
       base_branch = child.base_branch || parent
-      base = ProjectState.at(store, seq: base_seq, branch: base_branch)
-      ours = ProjectState.at(store, seq: now, branch: tgt)
-      thrs = ProjectState.at(store, seq: now, branch: src)
+      base_node   = child.base_node || child.fork_node
+      base = ProjectDag.view(base_branch, node: base_node)
+      ours = ProjectDag.view(tgt)
+      thrs = ProjectDag.view(src)
 
       plan, conflicts = plan(base.entries, ours.entries, thrs.entries, resolutions)
       result = { merged: false, dry_run: dry_run, source: src.name, target: tgt.name,
-                 base: { branch: base_branch.name, seq: base_seq }, seq: now,
+                 base: { branch: base_branch.name, seq: base_seq, node: base_node&.id }, seq: now,
                  actions: plan.map { |a| wire(a) }, conflicts: conflicts.map(&:to_h) }
       return result unless conflicts.empty?
 
       applied = []
       ActiveRecord::Base.transaction do
-        apply!(store, tgt, plan, ours.entries, applied, conflicts, user_id)
+        apply!(store, tgt, src, plan, ours.entries, applied, conflicts, user_id)
         raise ActiveRecord::Rollback if dry_run || conflicts.any?
-        # What was merged in is now in both: the source as it is at this seq
-        # is the next base.
-        child.update_columns(base_seq: store.seq, base_branch_id: src.id, updated_at: Time.current)
+        # What was merged in is now in both: the source's running head is
+        # the next merge base.
+        cut = ProjectDag.freeze!(src)
+        child.update_columns(base_seq: store.seq, base_branch_id: src.id,
+                             base_node_id: cut&.id, updated_at: Time.current)
         ProjectMergeRecord.create!(project_id: store.project_id, source: src, target: tgt, seq: store.seq,
                                    base_seq: base_seq, user_id: user_id, created_at: Time.current)
       end
@@ -213,57 +216,70 @@ module DbfsV2
 
     # `paths` follows the target's tree through the identity ops so content
     # ops find each node where it is now.
-    def apply!(store, tgt, plan, ours, applied, conflicts, user_id)
+    def apply!(store, tgt, src, plan, ours, applied, conflicts, user_id)
       b = tgt.name
+      fs = store.branch_fs(tgt)
       paths = ours.transform_values(&:path)
+      remove_ids = []
+      rewrite = {}
+      add = []
+
       plan.sort_by { |a| ORDER[a[:kind]] }.each do |a|
         case a[:kind]
         when 'delete'
           node = store.find(a[:path], branch: b)
-          next unless node && node.id == a[:node]                # a parent's delete took it
-          store.delete(a[:path], user_id: user_id, branch: b)
+          next unless node && node.id == a[:node]
+          fs.ids_under(a[:path]).each { |id| remove_ids << id }
           paths.reject! { |_, p| p == a[:path] || p.start_with?("#{a[:path]}/") }
           applied << a
         when 'move'
           cur = store.find(a[:to], branch: b)
-          next if cur && cur.id == a[:node]                      # moved with its parent
+          next if cur && cur.id == a[:node]
           from = paths[a[:node]]
           next unless from && store.find(from, branch: b)&.id == a[:node]
-          store.move(from, a[:to], user_id: user_id, branch: b)
+          fs.rewrites_for_move(from, a[:to]).each { |id, attrs| rewrite[id] = attrs }
           paths.each { |id, p| paths[id] = "#{a[:to]}#{p.delete_prefix(from)}" if p == from || p.start_with?("#{from}/") }
           applied << a.merge(from: from)
         when 'add'
           record = FileNode.find(a[:node])
-          store.adopt!(record, a[:path], branch: b, ftype: a[:ftype], revision_id: a[:revision], user_id: user_id)
+          cb = (a[:ftype] == 'file') ? fs.bind_line!(record, at: a[:revision]) : nil
+          add << { file_node_id: record.id, path: a[:path], ftype: a[:ftype], content_branch_id: cb&.id }
+          fs.send(:collect_missing_dirs!, File.dirname(a[:path]), add, user_id)
           paths[a[:node]] = a[:path]
           applied << a
-        when 'content'
-          path = paths[a[:node]] or raise "node #{a[:node]} is not on #{b}"
-          node, tname = store.locate(path, b, for_write: true)
-          record = node.resolve || node
-          if a[:mode] == 'take'
-            row = record.branches.find_by!(name: tname)
-            row.update!(head_revision_id: a[:source_revision]) unless row.head_revision_id == a[:source_revision]
-            DocumentCache.invalidate(record.id, tname)
-            applied << a.merge(head: a[:source_revision])
+        end
+      end
+
+      fs.commit_path_op!(add: add, remove_ids: remove_ids, rewrite: rewrite,
+                         second_parent: src.head_node, user_id: user_id)
+
+      plan.each do |a|
+        next unless a[:kind] == 'content'
+        path = paths[a[:node]] or raise "node #{a[:node]} is not on #{b}"
+        node, tname = store.locate(path, b, for_write: true)
+        record = node.resolve || node
+        if a[:mode] == 'take'
+          row = record.branches.find_by!(name: tname)
+          row.update!(head_revision_id: a[:source_revision]) unless row.head_revision_id == a[:source_revision]
+          DocumentCache.invalidate(record.id, tname)
+          applied << a.merge(head: a[:source_revision])
+        else
+          sname = source_row_name(record, a[:source_revision])
+          unless sname
+            conflicts << Conflict.new(node_id: a[:node], kind: 'content', detail: 'source revision has no branch row',
+                                      ours: { path: node.path, revision_id: a[:ours_revision] },
+                                      theirs: { path: node.path, revision_id: a[:source_revision] })
+            next
+          end
+          res = store.merge(node.path, target: tname, source: sname, auto: true, user_id: user_id, branch: b)
+          if res[:merged]
+            applied << a.merge(head: res[:head], fast_forward: res[:fast_forward] == true, source_branch: sname)
+          elsif res[:reason] == 'already at source head'
+            next
           else
-            sname = source_row_name(record, a[:source_revision])
-            unless sname
-              conflicts << Conflict.new(node_id: a[:node], kind: 'content', detail: 'source revision has no branch row',
-                                        ours: { path: node.path, revision_id: a[:ours_revision] },
-                                        theirs: { path: node.path, revision_id: a[:source_revision] })
-              next
-            end
-            res = store.merge(node.path, target: tname, source: sname, auto: true, user_id: user_id, branch: b)
-            if res[:merged]
-              applied << a.merge(head: res[:head], fast_forward: res[:fast_forward] == true, source_branch: sname)
-            elsif res[:reason] == 'already at source head'
-              next
-            else
-              conflicts << Conflict.new(node_id: a[:node], kind: 'content', detail: res[:reason],
-                                        ours: { path: node.path, revision_id: a[:ours_revision], branch: tname },
-                                        theirs: { path: node.path, revision_id: a[:source_revision], branch: sname })
-            end
+            conflicts << Conflict.new(node_id: a[:node], kind: 'content', detail: res[:reason],
+                                      ours: { path: node.path, revision_id: a[:ours_revision], branch: tname },
+                                      theirs: { path: node.path, revision_id: a[:source_revision], branch: sname })
           end
         end
       end

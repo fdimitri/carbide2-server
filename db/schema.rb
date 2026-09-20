@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_19_180000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_20_010000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -239,18 +239,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_19_180000) do
 
   create_table "project_branches", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.uuid "base_branch_id"
+    t.string "base_node_id", limit: 64
     t.bigint "base_seq"
     t.datetime "created_at", null: false
     t.datetime "deleted_at"
     t.bigint "deleted_seq"
+    t.string "fork_node_id", limit: 64
     t.bigint "fork_seq"
     t.uuid "forked_from_id"
+    t.string "head_node_id", limit: 64
     t.boolean "materialized", default: false, null: false
     t.string "name", null: false
     t.bigint "project_id", null: false
     t.bigint "seq", default: 0, null: false
     t.datetime "updated_at", null: false
     t.bigint "user_id"
+    t.index ["head_node_id"], name: "index_project_branches_on_head_node_id"
     t.index ["project_id", "name"], name: "index_project_branches_live_name", unique: true, where: "(deleted_at IS NULL)"
     t.index ["project_id"], name: "index_project_branches_on_project_id"
   end
@@ -280,6 +284,35 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_19_180000) do
     t.uuid "target_id", null: false
     t.bigint "user_id"
     t.index ["project_id", "seq"], name: "index_project_merges_on_project_id_and_seq"
+  end
+
+  create_table "project_node_entries", force: :cascade do |t|
+    t.uuid "content_branch_id"
+    t.datetime "created_at", null: false
+    t.uuid "file_node_id", null: false
+    t.string "ftype", default: "file", null: false
+    t.string "path", null: false
+    t.string "project_node_id", limit: 64, null: false
+    t.uuid "revision_id"
+    t.datetime "updated_at", null: false
+    t.index ["project_node_id", "file_node_id"], name: "index_project_node_entries_node", unique: true
+    t.index ["project_node_id", "path"], name: "index_project_node_entries_path", unique: true
+  end
+
+  create_table "project_nodes", id: { type: :string, limit: 64 }, force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.string "kind", default: "running", null: false
+    t.string "name"
+    t.string "parent_id", limit: 64
+    t.uuid "project_branch_id", null: false
+    t.bigint "project_id", null: false
+    t.string "second_parent_id", limit: 64
+    t.datetime "updated_at", null: false
+    t.bigint "user_id"
+    t.index ["project_branch_id"], name: "index_project_nodes_on_project_branch_id"
+    t.index ["project_id", "kind"], name: "index_project_nodes_on_project_id_and_kind"
+    t.index ["project_id", "name"], name: "index_project_nodes_snapshot_name", unique: true, where: "(((kind)::text = 'snapshot'::text) AND (name IS NOT NULL))"
+    t.index ["project_id"], name: "index_project_nodes_on_project_id"
   end
 
   create_table "project_settings", force: :cascade do |t|

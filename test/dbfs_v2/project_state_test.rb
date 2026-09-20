@@ -250,21 +250,24 @@ class ProjectStateTest < Minitest::Test
 
   # --- names -----------------------------------------------------------------
 
-  def test_snapshot_materializes_the_manifest_and_survives_later_writes
+  def test_snapshot_freezes_identity_revs_and_does_not_move_head
     @s.create_file('/a', content: "v1\n")
+    head_before = @s.main_branch.head_node_id
     snap = @s.snapshot!('v1', user_id: 7)
+    assert_equal head_before, @s.main_branch.reload.head_node_id, 'HEAD stays on the running node'
+    assert_equal head_before, snap.parent_id
+    assert snap.snapshot?
+
     @s.write('/a', ins(0, 0, 'changed '))
     @s.create_file('/b', content: 'b')
 
     assert_equal 'v1', @s.snapshot('v1').name
     assert_equal 7, snap.user_id
-    st = DbfsV2::ProjectState.from_h(snap.manifest_hash)
-    assert_equal ['/a'], st.paths
-    assert_equal "v1\n", st.read('/a')
-    assert_equal({ 'name' => 'main', 'overrides' => {} }, snap.branch_set_hash)
-    assert_equal snap.seq, @s.state(seq: snap.seq).seq
-    assert_equal ['/a'], @s.state(seq: snap.seq).paths, 'the seq alone re-derives the same state'
+    frozen = snap.entries.find_by!(path: '/a')
+    assert_equal "v1\n", DbfsV2::Content.at(FileNode.find(frozen.file_node_id), frozen.revision_id)
+    refute snap.entries.exists?(path: '/b')
+    assert @s.main_branch.head_entries.exists?(path: '/b')
     assert_raises(ActiveRecord::RecordInvalid) { @s.snapshot!('v1') }
-    assert_equal ['v1'], @s.snapshots.map(&:name)
+    assert_equal ['v1'], @s.snapshots.where.not(name: nil).map(&:name)
   end
 end

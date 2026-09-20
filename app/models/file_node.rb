@@ -11,6 +11,7 @@ class FileNode < ApplicationRecord
   has_many :revisions, dependent: :destroy
   has_many :file_events, dependent: :destroy
   has_many :branch_entries, dependent: :delete_all
+  has_many :project_node_entries, dependent: :delete_all
   has_many :keyframes, dependent: :destroy
   belongs_to :parent, class_name: 'FileNode', foreign_key: 'parent_id', optional: true
   has_many :children, class_name: 'FileNode', foreign_key: 'parent_id', dependent: :destroy
@@ -22,8 +23,8 @@ class FileNode < ApplicationRecord
   validates :path, presence: true
   validates :ftype, inclusion: { in: %w[file folder] }
 
-  # Soft-delete of a *node row* is leftover from when file_nodes was main's
-  # path index. Live-ness is branch_entries.deleted_at; FileNode is identity.
+  # Soft-delete of a *node row* is leftover from when file_nodes was a path
+  # index. Live-ness is presence on a branch's running head; FileNode is identity.
   scope :live, -> { where(deleted_at: nil) }
   scope :tombstoned, -> { where.not(deleted_at: nil) }
 
@@ -78,7 +79,7 @@ class FileNode < ApplicationRecord
 
     target = begin
       main = ProjectBranch.live.find_by(project_id: project_id, name: Branch::MAIN)
-      entry = main&.entries&.live&.find_by(path: symlink_target)
+      entry = main&.head_entries&.find_by(path: symlink_target)
       entry&.file_node
     end
     return nil unless target

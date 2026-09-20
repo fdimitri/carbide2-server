@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 require_relative 'dbfs_v2_test_helper'
 
-# Project branches (ADR-042, step 2): a branch of the whole tree with its own
-# existence log and path index, content frozen at the fork until written.
+# Project branches: a ref at a running project-DAG node. Path ops append a
+# hashed node; each file on the running head has its own content line.
 class ProjectBranchTest < Minitest::Test
   include StoreTestHelpers
 
@@ -19,15 +19,15 @@ class ProjectBranchTest < Minitest::Test
   def flat(n) = [n[:path]] + (n[:children] || []).flat_map { |c| flat(c) }
   def state_paths(branch) = @s.state(branch: branch).paths
 
-  def test_main_index_is_branch_entries
+  def test_main_index_is_the_running_head
     node = @s.find('/lib/a.rb')
-    entry = @s.main_branch.entries.live.find_by!(file_node_id: node.id)
+    entry = @s.main_branch.head_entries.find_by!(file_node_id: node.id)
     assert_equal '/lib/a.rb', entry.path
     assert_equal '/lib/a.rb', node.path
     refute_equal '/lib/a.rb', node.record.path
     assert node.record.path.start_with?(DbfsV2::BranchFs::IDENTITY_PREFIX)
     pb = @s.create_project_branch('feature')
-    assert pb.entries.live.exists?(file_node_id: node.id, path: '/lib/a.rb')
+    assert pb.head_entries.exists?(file_node_id: node.id, path: '/lib/a.rb')
     @s.write('/lib/a.rb', set("a2 on main\n"))
     assert_equal "a1\n", @s.read('/lib/a.rb', branch: 'feature')
     assert_equal "a2 on main\n", @s.read('/lib/a.rb')
@@ -41,23 +41,24 @@ class ProjectBranchTest < Minitest::Test
     assert_equal paths(@s.tree('/')), paths(@s.tree('/', branch: 'feature'))
     assert_equal "a1\n", @s.read('/lib/a.rb', branch: 'feature')
     assert_equal %w[main feature], @s.project_branches.map(&:name)
-    # The fold of the branch's lineage agrees with its index.
     assert_equal paths(@s.tree('/', branch: 'feature')) - ['/'], state_paths('feature')
   end
 
   def test_a_branch_is_frozen_at_the_fork_not_an_overlay
     @s.create_project_branch('feature')
+    feat = @s.find('/lib/a.rb').branches.find_by!(name: 'feature')
+    fork_rev = feat.head_revision_id
     @s.write('/lib/a.rb', set("a2 on main\n"))
     @s.create_file('/lib/c.rb', content: "c on main\n")
     assert_equal "a1\n", @s.read('/lib/a.rb', branch: 'feature')
     assert_nil @s.find('/lib/c.rb', branch: 'feature')
     st = @s.state(branch: 'feature')
-    assert_equal head_at_fork = @s.find('/lib/a.rb').branches.find_by!(name: 'main').branch_heads.order(:seq).first.revision_id,
-                 st['/lib/a.rb'].revision_id
+    assert_equal fork_rev, feat.reload.head_revision_id
+    assert_equal fork_rev, st['/lib/a.rb'].revision_id
     assert_equal "a1\n", st.read('/lib/a.rb')
   end
 
-  def test_first_write_forks_a_content_branch_bound_to_the_project_branch
+  def test_fork_binds_a_content_line_per_file
     pb = @s.create_project_branch('feature')
     @s.write('/lib/a.rb', set("a2 on feature\n"), branch: 'feature')
     assert_equal "a2 on feature\n", @s.read('/lib/a.rb', branch: 'feature')
@@ -66,7 +67,11 @@ class ProjectBranchTest < Minitest::Test
     assert_equal pb.id, cb.project_branch_id
     assert_equal head(@s, '/lib/a.rb'), cb.origin_revision_id
     assert_equal cb.head_revision_id, @s.state(branch: 'feature')['/lib/a.rb'].revision_id
-    assert_nil @s.find('/lib/b.rb').branches.find_by(name: 'feature'), 'untouched files stay pinned, no row'
+    untouched = @s.find('/lib/b.rb').branches.find_by!(name: 'feature')
+    assert_equal pb.id, untouched.project_branch_id
+    fork_b = untouched.head_revision_id
+    @s.write('/lib/b.rb', set("main changed b\n"))
+    assert_equal fork_b, untouched.reload.head_revision_id, 'the child line does not drift with main'
   end
 
   def test_a_file_created_on_a_branch_is_not_on_main
@@ -74,7 +79,7 @@ class ProjectBranchTest < Minitest::Test
     node = @s.create_file('/lib/only.rb', content: "only\n", branch: 'feature')
     assert_equal '/lib/only.rb', node.path
     assert_nil @s.find('/lib/only.rb')
-    refute @s.main_branch.entries.live.exists?(file_node_id: node.id), 'not on main'
+    refute @s.main_branch.head_entries.exists?(file_node_id: node.id), 'not on main'
     assert FileNode.find(node.id).path.start_with?(DbfsV2::BranchFs::IDENTITY_PREFIX)
     assert_equal "only\n", @s.read('/lib/only.rb', branch: 'feature')
     assert_includes state_paths('feature'), '/lib/only.rb'
@@ -115,38 +120,40 @@ class ProjectBranchTest < Minitest::Test
     assert_equal ['/lib/z.rb', 'file'], [st[:path], st[:type]]
   end
 
-  def test_a_past_state_of_a_branch_folds_by_seq
+  def test_a_past_running_node_does_not_see_later_path_ops
     @s.create_project_branch('feature')
-    before = @s.seq
+    before = @s.project_branch('feature').head_node
     @s.create_file('/later.rb', content: "x\n", branch: 'feature')
-    refute_includes @s.state(seq: before, branch: 'feature').paths, '/later.rb'
-    assert_includes @s.state(branch: 'feature').paths, '/later.rb'
+    refute before.entries.exists?(path: '/later.rb')
+    assert @s.project_branch('feature').head_node.entries.exists?(path: '/later.rb')
+    assert_equal before.id, @s.project_branch('feature').head_node.parent_id
   end
 
   def test_delete_frees_the_name_without_reviving_the_old_branch
     old = @s.create_project_branch('feature')
     @s.write('/lib/a.rb', set("old feature\n"), branch: 'feature')
-    cut = @s.seq
     @s.delete_project_branch('feature')
     assert @s.project_branch('feature').nil?
     assert ProjectBranch.find(old.id).deleted?
     fresh = @s.create_project_branch('feature')
     refute_equal old.id, fresh.id
     assert_equal "a1\n", @s.read('/lib/a.rb', branch: 'feature'), 'new row, forked from main now'
-    # The old branch's state at its cut still folds from its own rows.
-    assert_equal "old feature\n", DbfsV2::ProjectState.at(@s, seq: cut, branch: old).read('/lib/a.rb')
+    e = old.head_node.entries.find_by!(path: '/lib/a.rb')
+    assert_equal "old feature\n", DbfsV2::Content.at(FileNode.find(e.file_node_id),
+                                                     Branch.unscoped.find(e.content_branch_id).head_revision_id)
     assert_raises(ArgumentError) { @s.delete_project_branch('main') }
   end
 
-  def test_a_detached_per_file_branch_of_the_same_name_is_adopted
+  def test_a_detached_per_file_branch_of_the_same_name_is_not_the_project_line
     @s.branch('/lib/b.rb', 'feature')
     @s.write('/lib/b.rb', set("per-file feature\n"), branch: 'feature')
+    detached_head = head(@s, '/lib/b.rb', 'feature')
     pb = @s.create_project_branch('feature')
-    assert_equal "b1\n", @s.read('/lib/b.rb', branch: 'feature'), 'pinned at fork until written'
-    @s.write('/lib/b.rb', d('insertDataSingleLine', { startLine: 0, startChar: 0, data: '>' }), branch: 'feature')
+    assert_equal "b1\n", @s.read('/lib/b.rb', branch: 'feature'), 'new line at main head, not the detached work'
     cb = @s.find('/lib/b.rb').branches.find_by!(name: 'feature')
     assert_equal pb.id, cb.project_branch_id
-    assert_equal ">per-file feature\n", @s.read('/lib/b.rb', branch: 'feature')
+    refute_equal detached_head, cb.head_revision_id
+    assert Branch.tombstoned.exists?(file_node_id: @s.find('/lib/b.rb').id, name: 'feature')
   end
 
   def test_nested_forks_fold_through_the_lineage

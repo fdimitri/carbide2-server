@@ -1,10 +1,10 @@
-# A branch of the whole project (ADR-042): its own existence/identity log
-# (file_events tagged with this row) and current path index (branch_entries).
+# A branch of the whole project: a ref at a running project-DAG node
+# (`head_node`). FileEvents are notifications, not the source of the tree.
 # Identity is the uuid: a tombstoned name can be reused by a new row without
 # reviving this one's history.
 #
-# `main` is a row like any other, including its index: FileNode is identity
-# (uuid, posix, DAG), not the live path.
+# `main` is a row like any other. FileNode is identity (uuid, posix, content
+# DAG), not the live path. The live path is an entry on `head_node`.
 class ProjectBranch < ApplicationRecord
   self.primary_key = 'id'
 
@@ -12,9 +12,17 @@ class ProjectBranch < ApplicationRecord
 
   belongs_to :base_branch, class_name: 'ProjectBranch', optional: true
   belongs_to :forked_from, class_name: 'ProjectBranch', optional: true
+  belongs_to :head_node, class_name: 'ProjectNode', optional: true
+  belongs_to :fork_node, class_name: 'ProjectNode', optional: true
+  belongs_to :base_node, class_name: 'ProjectNode', optional: true
   has_many :entries, class_name: 'BranchEntry', dependent: :delete_all
+  has_many :project_nodes, dependent: :delete_all
   has_many :file_events
   has_many :content_branches, class_name: 'Branch'
+
+  def head_entries
+    head_node ? head_node.entries : ProjectNodeEntry.none
+  end
 
   before_validation :assign_id, on: :create
   before_create :stamp_seq

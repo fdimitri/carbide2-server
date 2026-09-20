@@ -25,17 +25,10 @@ module DbfsV2
       # Detached per-file branch name: the path lives on main; content is seeded
       # on `branch` only (no 'main' content row).
       fs = branch_fs(Branch::MAIN)
-      p = fs.send(:norm, path)
-      node = nil
-      ActiveRecord::Base.transaction do
-        fs.send(:ensure_dir!, File.dirname(p), user_id: user_id)
-        node = fs.send(:place!, p, ftype: 'file', owner: owner, group: group, mode: mode,
-                       binary: binary, user_id: user_id)
-        if content && !content.empty?
-          b = node.record.branches.find_or_create_by!(name: branch)
-          seed_content!(node.record, b, content, binary: binary, user_id: user_id)
-        end
-      end
+      node = fs.create_file(path, content: '', owner: owner, group: group, mode: mode,
+                            user_id: user_id, binary: binary, bind_content: false)
+      b = node.record.branches.find_or_create_by!(name: branch)
+      seed_content!(node.record, b, content, binary: binary, user_id: user_id) if content && !content.empty?
       node
     end
 
@@ -111,9 +104,9 @@ module DbfsV2
       (branch_fs(branch) || branch_fs(Branch::MAIN)).restore(path, user_id: user_id)
     end
 
-    # True when main has no live entries other than the (implicit) root.
+    # True when main's running head has no entries (the root is implicit).
     def project_empty?
-      !main_branch.entries.live.exists?
+      !main_branch.head_entries.exists?
     end
 
     # Symlink-aware: resolves the link, so a tombstoned target reads as gone.
@@ -381,28 +374,35 @@ module DbfsV2
       Clock.now(@project_id)
     end
 
-    # The project's state at (seq, branch_set). Defaults to now on main.
+    # The project's tree. With no cut, this is the running head of `branch`
+    # (default main) — the authoritative backing store, not a fold. `seq:` /
+    # `branch_set:` still derive a per-file BranchSet cut for the older
+    # content-selection API.
     def state(seq: nil, branch_set: Branch::MAIN, branch: nil)
+      if seq.nil? && branch_set == Branch::MAIN
+        pb = if branch
+               branch.is_a?(ProjectBranch) ? branch : (project_branch(branch) || main_branch)
+             else
+               main_branch
+             end
+        return ProjectDag.view(pb)
+      end
       ProjectState.at(self, seq: seq || self.seq, branch_set: BranchSet.wrap(branch_set), branch: branch)
     end
 
-    # Name a state: store (seq, branch_set) with the manifest materialized
-    # from them. The name retains it; unnamed states are just numbers.
-    def snapshot!(name, seq: nil, branch_set: Branch::MAIN, user_id: nil)
-      st = state(seq: seq, branch_set: branch_set)
-      ProjectSnapshot.create!(
-        project_id: @project_id, name: name, seq: st.seq,
-        branch_set: st.branch_set.to_h.to_json, manifest: st.to_h.to_json,
-        user_id: user_id, created_at: Time.now.utc
-      )
+    # Freeze the running head's identity-revs as a snapshot node. HEAD stays
+    # on the running node — a snapshot is a stored frozen tree, not a move.
+    def snapshot!(name, branch: Branch::MAIN, user_id: nil)
+      pb = branch.is_a?(ProjectBranch) ? branch : (project_branch(branch) || main_branch)
+      ProjectDag.snapshot!(pb, name: name, user_id: user_id)
     end
 
     def snapshots
-      ProjectSnapshot.where(project_id: @project_id).order(:seq, :name)
+      ProjectNode.snapshots.where(project_id: @project_id).order(:created_at, :name)
     end
 
     def snapshot(name)
-      ProjectSnapshot.find_by(project_id: @project_id, name: name)
+      ProjectNode.snapshots.find_by(project_id: @project_id, name: name)
     end
 
     # Merge project branch `source` into `target`: every file where the two
@@ -581,10 +581,12 @@ module DbfsV2
       FileNode.find_by(project_id: @project_id, path: '/')
     end
 
-    # mkdir -p on main's index. Kept so callers (and the race test) have a
-    # Store-level entry; the index itself is BranchFs.
+    # mkdir -p on main. Idempotent: an existing folder is returned.
     def ensure_dir!(path, user_id: nil)
-      branch_fs(Branch::MAIN).send(:ensure_dir!, path, user_id: user_id)
+      fs = branch_fs(Branch::MAIN)
+      existing = fs.find(path)
+      return existing if existing
+      fs.create_folder(path, user_id: user_id)
     end
 
     def normalize(path)
