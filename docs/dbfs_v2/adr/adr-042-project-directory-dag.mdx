@@ -1,14 +1,14 @@
 ---
-title: "ADR-042: Project revisions over per-file DAGs"
-description: "A project state is (S, B): a cut S through the project's single sequenced log of revisions and file events, resolved through a branch set B. Manifests are materialized frontiers, stored only when named."
+title: "ADR-042: Project DAG over per-file DAGs"
+description: "Two graphs: a FileNode UUID is identity (content DAG), and every public path op appends a hashed running node on a merkle directory tree (project DAG). The running head is a live content-line pointer. Snapshots freeze identity-revs and do not move HEAD."
 sidebar:
   order: 42
   badge:
-    text: Proposed
-    variant: note
-status: Proposed
+    text: Accepted
+    variant: success
+status: Accepted
 implementation_exists: true
-date: "2026-09-18"
+date: "2026-09-20"
 extends:
   label: ADR-034 (DBFS v2)
   href: /design/decisions/adr-034-dbfs-v2/
@@ -27,393 +27,352 @@ import AdrHeader from '../../../../components/AdrHeader.astro';
 
 ## Context
 
-DBFS v2 is a **per-file** DAG. It answers "what is this file at revision R" and
-has no object that means "this project at R" — no commit, no tree, no snapshot.
-Snapshots, undo, provenance ("which repository state did this run against") and
-offline editing all want one, and none can be finished without it.
+DBFS v2 is a **per-file** DAG. It answers "what is this UUID at revision R"
+and, by itself, has no object that means "this project": which identities
+exist, at which paths, bound to which content. Snapshots, fork, whole-tree
+merge, provenance, and the explorer all need that object.
 
-The first draft of this ADR framed the gap as a choice between an **explicit
-manifest** (a commit-like row holding `file_id → revision_id`) and a **derived
-frontier** (a project state implied by a set of per-file heads), and listed
-"there is no global clock" as the reason neither was a thin wrapper. Both
-halves of that framing were wrong in a useful way:
+A first design named a project state as a derived fold `(S, B)` — a clock cut
+`S` through `file_events` plus per-file branch heads, with a stored manifest
+only when something named a snapshot. That is not how the store works. The
+authoritative project is a **stored DAG of hashed nodes**. The clock still
+ticks (revisions, path-op notifications, branch births, reflog, the branch
+rail); it does not name the tree.
 
-- There *is* a clock. ADR-041 already serializes every write; the system has a
-  single writer per project (one Postgres, one lock). Anything that single
-  writer stamps is a total order, and a total order is exactly what a project
-  state needs.
-- Manifest and frontier are not alternatives. Git resolves the same question by
-  storing commits and deriving the working tree; here the roles are arranged so
-  that *writes* never pay: derive by default, store when named.
+Four facts a project node must pin, and where they live now:
 
-What was right in the first draft is the inventory of facts a project state
-must pin, and the observation that three of the four do not live in the
-revision DAG:
+| fact | where it lives |
+|---|---|
+| identity | `file_nodes.id` (UUID). `file_nodes.path` is a unique slot (`/.nodes/<id>`), not the user-visible location. |
+| location | merkle directory entries on a project node (`path` is reconstructed by walking names). |
+| content, running | the live per-file line `(file_node, project_branch)` — a submodule pointer at a branch, not a rev. |
+| content, snapshot | `revision_id` stamped on file entries of that snapshot tree. |
 
-| fact | where it lived | why a path → revision map cannot express it |
-|---|---|---|
-| content | `revisions` | which revision of each file |
-| existence | `file_nodes.deleted_at`, mutated in place | a file present in one state and absent in the other |
-| identity | `file_nodes.path`, mutated in place | rename keeps the node id and changes the path — "the same file moved" |
-| branch | per-file `branches` | a repo-wide branch is a *set* of per-file branches, and that set had no name |
-
-Existence and identity were **current state, not history**: `move` rewrote
-`path`, `delete` set `deleted_at`, and neither left a record. That is the one
-place the substrate was not substrate-quality, and it is a prerequisite for any
-shape of project revision.
+Existence is presence on the running head. Delete does not destroy the UUID or
+its content DAG. Restore / recreate walk parent project nodes for the last
+path → UUID.
 
 ## Decision
 
-**A project state is the pair `(S, B)`: a position `S` in the project's single
-sequenced log, resolved through a branch set `B`. It is derived, cheap, and
-nameable; a manifest is a materialized state, stored only when something names
-it.**
+**The project is a stored DAG. Every public path op appends one hashed running
+node and moves HEAD onto it. Content writes do not. There is no dirty working
+tree — this is the authoritative backing store.**
 
-- **The clock.** Every project has one monotonic counter. A revision, and every
-  filesystem operation that changes existence or identity, takes the next value
-  **inside the writing transaction**, so sequence order is commit order. One
-  tick per revision; one tick per operation (a subtree delete shares one `seq`,
-  so no cut falls inside it). Everything written before the clock existed is
-  `seq 0`, "prehistory".
-- **Events, not mutations, for existence and identity.** `file_events` is an
-  append-only log: `created`, `deleted`, `restored`, `renamed (from_path →
-  path)`, each stamped with the node id and a `seq`. `file_nodes.path` and
-  `deleted_at` remain the *current* index the filesystem API reads; they are no
-  longer the only record.
-- **Branches are born with a `seq` and an origin, keep a reflog, and die by
-  tombstone.** A branch records the revision it forked at and when. Every head
-  move is logged with a `seq` (`branch_heads`), because a fast-forward moves the
-  pointer onto a revision committed on *another* branch without creating one —
-  so "the newest revision on `b`" is not `b`'s head, the reflog is. Deleting a
-  branch stamps it deleted at a `seq`; it no longer re-homes its revisions to
-  `main`, because that rewrote which branch a revision belongs to and would
-  change a past state after the fact. The name is free for reuse (the
-  uniqueness index is partial).
-- **A branch set `B`** is a name plus optional per-file overrides. Resolution:
-  the file's branch called `B.name` if it was live at `S` (born at or before,
-  not deleted at or before); otherwise `main`. Server-made `auto/…` branches
-  are per-file conflict artifacts and never resolve, so no project state can
-  depend on one.
-- **The state at `(S, B)`**, per file: existence and path are the fold of the
-  file's events with `seq ≤ S` (`created`/`restored` ⇒ present, `deleted` ⇒
-  absent, `renamed` ⇒ path only); content is `B(file)`'s newest reflog entry
-  with `seq ≤ S` — its origin, right after a fork. Folders carry existence
-  only. Switching project branch changes `B`, not `S`.
-- **Names are materializations.** A snapshot, a tag, or "this run happened
-  against R" stores `(S, B)` together with the manifest computed from it, so a
-  name survives anything later done to the DAG. Unnamed states cost nothing to
-  keep because they are a number; named ones are retained by whatever named
-  them. That answers garbage collection.
-- **Comparison needs no new algorithm.** Containment is per-file ancestry
-  (ADR-036). The diff set of two states on one branch set is the files with any
-  revision or event in `(S_A, S_B]` — one indexed range scan. The merge base is
-  the manifest of per-file lowest common ancestors and, exactly as with git's
-  recursive merge, need not be a state that ever existed; it is an input to
-  per-file merges, not something anyone checks out.
-- **A project branch is a branch of the whole tree.** `project_branches` rows
-  have UUID identity (a tombstoned name can be reused without reviving its
-  history), a parent and a `fork_seq`, and a `materialized` flag. `main` is a
-  row too. A non-main branch owns a **path index**, `branch_entries`: at the
-  fork, a full copy of the parent's live entries with each file's content
-  **pinned** at the parent's head then — frozen, like a git tree, not an
-  overlay that follows `main`. Existence and identity on the branch are its
-  own `file_events` (`project_branch_id`), and its state at `S` is the fold of
-  its lineage: the parent's log up to `fork_seq`, then its own. A file's first
-  write on the branch forks a per-file content branch named after it and bound
-  to it (`branches.project_branch_id`); until then reads come from the pin. A
-  file created only on a branch is a `file_nodes` row parked under a
-  placeholder path and tombstoned on `main`, so `main` never sees it and the
-  identity is ready to be adopted by a merge.
-- **Materializing a branch is the user's choice, per branch.** `main` is the
-  project's working area (`/srv/projects/<project>`) and is always on disk. Any
-  other branch lives in the DBFS alone until the user puts it on disk: then it
-  is its own directory, `<root>/.branches/<branch-uuid>` (the uuid, so a reused
-  name never lands in a stale directory), with its own flusher/watcher pair —
-  the same `VfsFlusher` / `VfsWatcher` / `FsLoader` as `main`, over a
-  `BranchView` (a `Store` bound to the branch, so every read, head query and
-  absorb is branch-scoped without the classes knowing). `.branches` is pruned
-  from `main`'s loader and watcher. Turning it off stops the pair and removes
-  the directory; the DBFS keeps the branch. Materialized branches come back on
-  worker boot. Terminals and agents that need a branch `cd` into its
-  directory.
-- **Project merge is a three-way merge of the whole tree by node identity,
-  reconcile-or-conflict, and atomic.** Between a branch and its parent (either
-  direction): base is the child's `(base_branch, base_seq)` — the parent at the
-  fork, then, after each merge between the two, the *source* of that merge as
-  it was then — ours the target now, theirs the source now. Per node, the side
-  that changed wins: a delete, a move, an add (`adopt!`: the same node placed
-  on the target at that path with its content pinned — identity survives the
-  merge), a content take or a per-file auto-merge. Both sides changing
-  differently is a conflict — `rename/rename`, `rename/delete`,
-  `modify/delete` and their reverses, `add/collision` (a different node holds
-  the path), `content` — and the merge takes **resolutions** for the identity
-  kinds (`ours` / `theirs` / `path`) while content conflicts are settled with
-  the per-file three-way merge, after which they no longer conflict here. Any
-  conflict left rolls everything back and is reported; a preview is the same
-  run in a transaction that always rolls back, so it is exact.
+### Identity
+
+A `FileNode` is identity: UUID, POSIX, symlink target, binary flag, the
+per-file revision DAG. The user-visible path is **location**, held by the
+project tree, not by the node row.
+
+On the wire (PROTOCOL 12) a document is `(project, file_node_id, branch)`.
+Tabs keep one Monaco per that triple; the tab **label** follows a rename; the
+path field is a location cache. The explorer takes `fs/tree` as a snapshot
+(connect, branch switch, import, merge, bulk `created` at `/`) and otherwise
+applies `created` / `renamed` / `deleted` in place.
+
+### Two graphs
 
 ```d2
-# One sequenced log per project; a project state is a cut through it,
-# resolved per file through a branch set.
 direction: right
 
-log: "project log (seq)" {
-  direction: right
-  e1: "1 created /a.rb"
-  r2: "2 rev /a.rb main"
-  e3: "3 created /b.rb"
-  r4: "4 rev /b.rb main"
-  r5: "5 rev /a.rb feature"
-  e6: "6 renamed /b.rb → /c.rb"
-  r7: "7 rev /a.rb main"
-  e1 -> r2 -> e3 -> r4 -> r5 -> e6 -> r7
-}
-
-cut: "S = 6" {
-  style.stroke-dash: 3
-}
-log.e6 -> cut
-
-state: "state (6, feature)" {
+identity: "identity DAG\n(FileNode UUID)" {
   direction: down
-  a: "/a.rb → rev 5 (feature)"
-  c: "/c.rb → rev 4 (main: no feature branch)"
+  r1: "rev"
+  r2: "rev"
+  r3: "rev"
+  r1 -> r2 -> r3
 }
-cut -> state: "fold events ≤ 6\nnewest rev ≤ 6 on B(file)"
 
-snap: "snapshot 'release-1'\n(S, B) + manifest"
-state -> snap: "materialize when named" {style.stroke-dash: 3}
+project: "project DAG\n(path op → node)" {
+  direction: down
+  n1: "running"
+  n2: "running"
+  snap: "snapshot"
+  n3: "running"
+  n1 -> n2 -> n3
+  n2 -> snap: "parent\n(HEAD does not move)"
+}
+
+bind: "binding" {
+  running: "running: live line\n(file_node, project_branch)"
+  frozen: "snapshot: revision_id\non file entries"
+}
+
+identity -> bind
+project -> bind
 ```
+
+- **Identity DAG.** Edits on a minted UUID. Keystrokes, blob writes, per-file
+  branch, per-file merge. Unchanged by a path op except that the project node
+  still points at the same UUID.
+- **Project DAG.** Create / rename / delete / restore / adopt. `mkdir -p` plus
+  `create_file('/a/b/c')` is **one** public path op → one running node. Linear
+  on a branch (parent = previous running node); a merge node has a second
+  parent. Fork hangs the child's first running node off the parent's then-head.
+
+`Store#state(branch:)` is `ProjectDag.view` of that branch's running head: path
+→ identity → live (or frozen) identity-rev. It is not `ProjectState.at(seq:)`.
+`BranchSet`, `merge_project`, and the old `project_snapshots` table are gone.
+
+### Running head
+
+A running node's files point at a **live content line**, the way git would if a
+submodule recorded a branch instead of a commit. `content_branch_id` is not
+stored on the tree (see Merkle). Resolution is
+`(file_node_id, project_branch_id)` (unscoped, so a tombstoned project branch
+still names its lines). A content write advances that line and **does not**
+append a project node.
+
+HEAD is a pointer at the latest **running** node (`project_branches.head_node_id`).
+The tip always advances on a path change. There is no dirty WT relative to
+HEAD; the store *is* HEAD.
+
+### Snapshots
+
+Snapshots are rows in the same `project_nodes` table (`kind: snapshot`).
+`snapshot!(name)` freezes each file's identity-rev onto the tree and hangs the
+new node off the running head as `parent`. **HEAD does not move onto the
+snapshot.** Unnamed snapshots (`freeze!`) are the fork/merge-base cut: later
+writes on those content lines cannot move the recorded tree.
+
+Squash / compact of running history is out of scope. A snapshot is the bound
+for "what was frozen"; history reads of path ops walk parent running nodes
+(and, for a delta from a named cut, start at that snapshot). There is no
+storage sweeper that folds running nodes away.
+
+### Merkle directories
+
+A directory is a content-addressed object:
+
+- `project_trees.id` = SHA-256 of the sorted children
+  (`name`, `file_node_id`, `ftype`, `child_tree_id`, `revision_id`).
+- `project_tree_entries` are **basenames**. Folders carry `child_tree_id`;
+  snapshot files carry `revision_id`. No `content_branch_id` — forks could not
+  share trees if the line id lived on the entry.
+- A project node is `kind`, parents, optional `name`, and `root_tree_id`. Its
+  id is SHA-256 of those fields.
+
+A path op copy-on-writes only the **dirty spine** (changed leaf + ancestor
+dirs). Unchanged sibling directories keep their tree id. A folder move/delete
+reuses the child's tree pointer; descendants are not rewritten.
+
+```d2
+direction: down
+
+root: "root tree" {
+  a: "wide/  → T_wide"
+  b: "README → file UUID"
+}
+
+wide: "T_wide" {
+  f0: "f0.txt"
+  f1: "f1.txt"
+  fN: "…"
+}
+
+root -> wide
+note: "add /wide/new.txt\n→ new T_wide' and new root'\nT_wide remains; README's entry is copied into root'"
+```
+
+Fork: mint a new per-file `Branch` at the parent's then-head (O(files),
+unavoidable), then a new running node with the **same** `root_tree_id`. The
+child does not share the parent's line and does not follow later parent
+edits. Snapshot/freeze rebuilds trees with stamped revs (O(N) once, accepted).
+
+A full-flat copy of every path onto every running node is rejected: `cp` of 5
+files in a 10k-file project must not insert ~50k rows.
+
+### Clock and events
+
+Every project has one monotonic counter (`Clock.tick!` inside the writing
+transaction, so seq order is commit order). It stamps:
+
+- each revision
+- each path-op **notification** (`file_events`: `created` / `renamed` /
+  `deleted` / `restored`; one seq per operation, N rows for a subtree)
+- branch birth (`branches.seq`, `project_branches.seq`)
+- every head move (`branch_heads` reflog — a fast-forward ticks even when no
+  revision is created)
+- `ProjectMergeRecord.seq`
+
+`file_events` are **not** the tree. The explorer uses them; `ProjectGraph`
+buckets them; restore/find_any walk **parent project nodes**, not the event
+log. Recreating a path over a tombstone is a `created` on the same UUID.
+
+`S` is a stamp across the two graphs (path-op nodes vs content-line heads at
+that clock). It is not an API for "the project at seq S". Examining a branch
+between explicit snapshots including keystrokes would use that stamp; it is
+not `Store#state`.
+
+Deleting a per-file or project branch is a tombstone. Revisions keep
+`branch_id`. The name is free (partial unique index). Re-homing history onto
+`main` is rejected — a past state would gain revisions that were never on
+`main`.
+
+### Project branches
+
+`project_branches` rows have UUID identity. `main` is a row like any other for
+the **path index**. A tip is `head_node_id`. `fork_node_id` / `base_node_id`
+are frozen project nodes (the parent at fork; then, after each merge between
+the pair, a freeze of the source).
+
+`BranchFs` is the filesystem of one project branch, including main: find /
+list / tree, create / delete / restore / move, `adopt!`, `ensure_content_branch!`.
+`Store` operations take `branch:` and dispatch. A file created only on a
+branch is a UUID whose location exists on that head and not on main's.
+
+### Project merge
+
+Three-way merge of the whole tree **by node identity**, reconcile-or-conflict,
+atomic. Base is the child's `base_node` (else `fork_node`); ours is the
+target's running head; theirs is the source's. Per node, the side that changed
+wins (delete, move, `adopt!`, content take or per-file auto-merge). Both sides
+changing differently is a conflict (`rename/rename`, `rename/delete`,
+`modify/delete` and reverses, `add/collision`, `content`). Identity conflicts
+take `ours` / `theirs` / `path`; content conflicts use the per-file three-way
+merge. Any unresolved conflict rolls back. `dry_run: true` is the same
+transaction, always rolled back.
+
+After a successful merge the source's running head is frozen and becomes the
+child's next `base_node`.
+
+### Materialization
+
+On-disk working area is the user's choice **per branch**, except `main`, which
+is always the project root (`/srv/projects/<project-uuid>`). Any other branch
+is DBFS-only until toggled on: then `<root>/.branches/<branch-uuid>` (uuid, so
+a reused name never lands in a stale directory) with its own flusher/watcher
+pair over a `BranchView`. `.branches` is pruned from main's loader and watcher.
+Toggle-off stops the pair and removes the directory; the DAG keeps the branch.
+Materialized branches come back on worker boot.
+
+PROTOCOL 11: `fs/project_branch_materialize { name, on }` →
+`fs/project_branch_materialized`; branches carry `disk`.
+
+### ProjectGraph
+
+The **Branches** tab is not the project DAG. `ProjectGraph` condenses seq-stamped
+activity (edits, file events, fork, merge) into runs with a pause gap, one lane
+per project branch, same rail layout as the per-file history pane. Stepping a
+branch's trees over time (event text + tree at a project node, identity chips
+for moves) is a different surface and is not built.
 
 ## Consequences
 
 **Positive**
 
-- A project revision is an integer plus a branch set. Provenance is "seq 4812";
-  undo is "the state at 4812 − k"; a snapshot is that pair with its manifest
-  written down.
-- No project-level object is dirtied by a write. The clock tick is one `UPDATE`
-  on one row in a transaction that already holds a row lock.
-- Rename and delete are history for the first time. "What was `/b.rb` called at
-  S" is a fold of four kinds of event, not a guess.
-- Branch deletion no longer alters the past.
-- The open questions of the first draft collapse: the manifest/frontier choice
-  (both, in their proper roles), project branches (a resolution rule), the
-  project merge base (per-file LCAs), snapshot cost (a number), garbage
-  collection (names retain).
+- A project revision is a stored, hashed node. Provenance is a node id; a
+  named snapshot is a frozen tree hanging off a running head.
+- Path ops pay for the dirty spine, not the whole project. Forks share running
+  trees.
+- Rename and delete are history: parent nodes still hold the old binding;
+  HEAD does not. Recreate keeps the UUID.
+- Main's path index is the same mechanism as every other project branch.
+- Branch deletion does not alter the past.
 
-**Negative / to resolve**
+**Negative / constraints**
 
-- The counter row is a per-project hot spot: it serializes every write in a
-  project, not only writes to one branch. Writes are batches, not keystrokes,
-  and the lock is held for the duration of an insert, so this is acceptable; it
-  is also exactly the stronger ordering the clock is buying. It stops being
-  acceptable if writes ever run outside the lock (offline), which is already
-  the line ADR-041 draws.
-- Prehistory (`seq 0`) is one undifferentiated state. Backfill assigns every
-  pre-existing revision and node to it; nothing older than the migration can be
-  cut finer than "before".
-- A project branch's index is a full copy of the parent's entries. Forking a
-  large tree is O(files) rows, and every branch-scoped path lookup goes through
-  `branch_entries` rather than `file_nodes`. The alternative — an overlay that
-  reads through to `main` for untouched files — was rejected because the
-  branch would then *move* when `main` did, which is not what a fork means.
-- A pin (`branch_entries.revision_id`) is set at fork or adopt time and does
-  not itself have history; a file re-adopted onto a branch by a later merge
-  has its earlier pin overwritten, so a state of that branch cut between the
-  two adopts reads the later pin. Files the branch has written are unaffected
-  (their content is a reflog'd branch row).
-- The branch-name uniqueness index is now partial (`WHERE deleted_at IS NULL`),
-  which Postgres and SQLite both support but which a reader of the schema has to
-  notice.
+- The clock row still serializes every write in a project. Writes are batches,
+  not keystrokes; the lock is the stronger ordering ADR-041 already requires.
+- Freeze/snapshot and minting fork lines are O(files) once. That is accepted.
+  Running path ops must not be.
+- `branch_entries` remains in the schema from the first index; it is not the
+  tree. The live index is `head_node.root_tree_id`.
+- `write_blob` still has no `MAX_BLOB_BYTES` guard (decisions #26). Ingest and
+  the loader cap at `ProjectFs::MAX_FILE_SIZE` (5 MB).
 
-### The clock, precisely
+### Merkle hash
 
-```ruby
-# inside the writing transaction:
-INSERT INTO project_clocks (project_id, seq) VALUES (?, 1)
-  ON CONFLICT (project_id) DO UPDATE SET seq = project_clocks.seq + 1
-  RETURNING seq
+```text
+tree_id = SHA256( "tree\n" + sort_by name: name, file_node_id, ftype, child_tree_id, revision_id )
+node_id = SHA256( kind, parent_id, second_parent_id, name, root_tree_id )
 ```
 
-A Postgres `SEQUENCE` would not do: sequences are not commit-ordered (a
-transaction that drew 41 can commit after the one that drew 42). The counter
-row's lock is held until commit, so the next writer cannot draw until the
-previous value is durable, and `seq` order **is** commit order. `Revision`
-draws its value in `before_create`, which runs inside the save's transaction;
-the four call sites that create revisions (append, blob write, both merge
-paths) therefore need no changes and cannot forget.
+Identical children in any insert order agree. `put_tree!` is content-addressed
+and uses a savepoint so a concurrent insert of the same tree does not abort the
+outer transaction (the same pattern as `ProjectDag.insert!`).
 
-### Events
+### Events (notifications)
 
 ```jsonc
-// file_events — append-only; one seq per operation
-{ "seq": 6, "file_node_id": "…", "kind": "renamed", "path": "/c.rb", "from_path": "/b.rb", "user_id": 7 }
+// file_events — append-only; one seq per public path op
+{ "seq": 6, "file_node_id": "…", "kind": "renamed", "path": "/c.rb", "from_path": "/b.rb" }
 { "seq": 9, "file_node_id": "…", "kind": "deleted",  "path": "/c.rb" }
 { "seq": 12, "file_node_id": "…", "kind": "restored", "path": "/c.rb" }
 ```
 
-Recreating a path over a tombstone (ADR-004's "same identity resurrected") is a
-`created` event on the same node id. A folder move emits one `renamed` per
-descendant under the one `seq`, so the subtree is either all moved or all not
-at any cut.
-
-### Resolving a branch set
-
-```text
-B(file) =
-  the override in B.overrides[file_id]               if it names a branch live at S
-  the file's branch named B.name                     if live at S
-                                                     (branch.seq ≤ S < deleted_seq)
-  main                                               otherwise
-head(file, S) =
-  newest branch_heads row for B(file) with seq ≤ S   (the reflog: appends share
-                                                      the revision's seq, a
-                                                      fast-forward ticks its own)
-```
-
-`auto/…` branches are excluded by name. They exist so a refused batch is not
-lost (ADR-037); they are not places a project state may point.
-
-```d2
-# Project merge: per-file merges where the two sets resolve differently,
-# in one transaction; any conflict aborts all of it.
-direction: right
-
-src: "source set\n(feature)"
-tgt: "target set\n(main)"
-res: "resolve per file\nB_src(f) vs B_tgt(f)"
-same: "same branch\n→ nothing"
-ff: "fast-forward"
-auto: "three-way auto-merge\n(ADR-036 gate)"
-ok: "commit all\n(one transaction)"
-stop: "unresolved list\n→ rollback, report"
-
-src -> res
-tgt -> res
-res -> same
-res -> ff: "ancestor"
-res -> auto: "diverged"
-ff -> ok
-auto -> ok: "disjoint"
-auto -> stop: "overlapping writes\nor head moved under lock"
-```
-
-### Materialization and the watcher
-
-Writing a state `(S, B)` onto the working area (ADR-039) is a burst of external
-edits as far as the watcher is concerned. The rule is simple and not
-project-specific: the flusher **pauses the watcher on that subtree**, writes
-the manifest's content, records the written heads as on-disk, and resumes.
-Events during the pause are dropped by construction; the resumed watcher's next
-comparison finds nothing to ingest. Edits a human or agent makes to that subtree
-*during* the window are lost, which is acceptable if the window is short and
-stated. Materializing a project branch sidesteps the rule by construction: the
-branch's directory is written in full *before* its watcher starts, and the
-flusher's first sweep recognises the written bytes as current (the restart
-rule), so there is no window. Checking a `(S, B)` out onto an existing,
-watched directory (open question 2) is where the pause rule applies.
+A folder move emits one `renamed` per descendant under one `seq`. The tree
+change is one project node that relocates the folder's child tree.
 
 ## What exists
 
-The substrate is implemented server-side in `DbfsV2`:
+Server (`DbfsV2`):
 
-- migration: `project_clocks`, `file_events`, `branch_heads`,
-  `project_snapshots`; `revisions.seq` / `revisions.project_id`;
-  `branches.seq` / `origin_revision_id` / `deleted_at` / `deleted_seq` with
-  the partial unique index; backfill of prehistory.
-- `Clock.tick!`; `Events.record!` from every `Store` operation that changes
-  existence or path; `Revision` and `Branch` stamping in `before_create`; the
-  reflog written from `Branch#after_save`, so no head-moving call site can
-  forget it.
-- `ProjectState.at(store, seq:, branch_set:)` → manifest; `diff`, `contains?`,
-  `merge_base`, `read`; `BranchSet` with the resolution rule.
-- `Store#seq` / `#state` / `#snapshot!` / `#snapshots` / `#snapshot` /
-  `#merge_project`, and `ProjectMerge.merge` (the per-file branch-set merge).
+- Clock, `file_events`, `branch_heads`; revisions and branches stamped with
+  `seq`; tombstones; `ProjectGraph`.
+- `project_nodes` (`kind` running|snapshot, parents, `root_tree_id`),
+  `project_trees` / `project_tree_entries`; `ProjectDag` (dirty-spine builder,
+  `view`, `lookup` / `flatten`, freeze/snapshot); `BranchFs`;
+  `Store#state(branch:)`, `#snapshot!`.
+- `project_branches` (`head_node_id`, `fork_node_id`, `base_node_id`);
+  `ProjectMerge.branches`; `adopt!`; `BranchView`.
+- Identity slot `/.nodes/<uuid>`; PROTOCOL 12 document key.
 
-Project branches (step 2):
+Worker: PROTOCOL 10–12 as above; `BranchMirrors`; `OPEN_DOCUMENTS` keyed by
+FileNode UUID; `fs/tree` and grep use the project-branch index for main too.
 
-- migration: `project_branches` (uuid, `forked_from_id`, `fork_seq`,
-  `base_branch_id`/`base_seq`, `deleted_at`/`deleted_seq`, `materialized`),
-  `branch_entries`, `project_branch_id` on `file_events` and `branches`;
-  backfill of a `main` row per project.
-- `ProjectBranch`, `BranchEntry`; `BranchFs` (the filesystem over a branch's
-  index: find/stat/list/tree, create/delete/restore/move, `adopt!`,
-  `ensure_content_branch!`); `Store` operations take `branch:` and dispatch;
-  `Store#create_project_branch` / `#delete_project_branch` /
-  `#project_branches` / `#adopt!` / `#merge_branches`; `ProjectState.at(...,
-  branch:)` folds the lineage; `ProjectMerge.branches`.
-- worker (PROTOCOL 10): `fs/project_branches`, `fs/project_branch_create`,
-  `fs/project_branch_delete`, `fs/project_merge_preview`, `fs/project_merge`;
-  `branch` on every tree/existence/content command selects the project
-  branch; frames carry `branch`.
-- client: the workspace is on a project branch (session doc `branch`); the
-  explorer's branch bar (pick, fork, delete, merge ↑ / update ↓) and a
-  `project-merge` tab (plan, conflicts, resolutions, commit) over the per-file
-  `merge` tab.
-
-Materialization (step 3):
-
-- `DbfsV2::BranchView` (`Store#for_branch`, `ProjectFs.store(id, branch:)`),
-  `Store#text_heads(branch:)`; `Flusher#flush_all` walks the bound tree;
-  `FsLoader` takes `branch:`; `.branches` in `FsLoader::PRUNE_DIR_NAMES`.
-- worker (PROTOCOL 11): `BranchMirrors` (one flusher/watcher pair per
-  materialized branch, started on toggle and at boot, stopped on toggle-off
-  and on branch delete); `VfsFlusher` / `VfsWatcher` take `branch:` and every
-  watcher frame carries it; `FsStore.flusher_for(project, branch)` routes
-  disk side effects of writes, creates, renames, deletes and merges to
-  whichever mirror holds the branch. `fs/project_branch_materialize { name,
-  on }` → `fs/project_branch_materialized { branch, on }`; branches on the
-  wire carry `disk` (their directory relative to the project root, or null).
-- client: an on-disk toggle in the explorer's branch bar; the notice shows the
-  directory.
+Client: workspace branch; explorer event-only patch; tabs keyed by
+`(file_node_id, branch)`; project-merge tab; Branches rail (`fs/project_dag`).
 
 ## Open questions
 
-1. ~~**Branch-scoped existence.**~~ Resolved by project branches (above).
-   A pending set-level conflict has no stored representation: the merge is
-   refused with the list, and the answers are given with the next attempt.
-   That is enough while a merge is one sitting; a long-lived "merge in
-   progress" would want the resolutions persisted.
-2. **Checkout.** `ProjectState` produces a manifest; nothing yet writes one onto
-   the working area under the pause rule above.
-3. **Compaction of prehistory.** Whether to synthesize finer `seq` values for
-   pre-migration revisions from their timestamps, or leave `seq 0` as one state.
-   Timestamps are not commit-ordered, so any such backfill is approximate and
-   should be labelled as such.
+1. **Checkout of a past project node** onto a watched directory (pause the
+   watcher, write the tree, resume). Materializing a live branch already writes
+   the directory before its watcher starts.
+2. **On-disk names.** Requested and not built: `<root>/<branch-name>` →
+   `.branches/<uuid>`. Today's layout is uuid-only under `.branches`.
+3. **Agent file tools** scoped to the workspace project branch.
+4. **A project-identity visualizer** (slider over running nodes, FileEvent
+   captions, tree at that node with UUID chips so a move is a transition, not
+   a create+delete). Distinct from `ProjectGraph`.
+5. **`S` as a read API** for "the project between snapshots, including
+   keystrokes" (path-op nodes + content-line heads at `S`). Not `state(seq:)`.
+6. A pending set-level merge still has no stored "merge in progress";
+   resolutions travel with the next attempt.
 
 ## Out of scope
 
-- **Running a merge or transform outside the server lock.** That is offline
-  editing, and it changes ADR-041 before it changes this ADR.
-- **Agent-conversation DAGs** (ADR-032) — a different graph with a different
-  merge.
+- **Compact / squash of running project nodes.** Snapshots freeze; they do not
+  license a sweeper.
+- **Running a merge or transform outside the server lock.** Offline editing
+  changes ADR-041 first.
+- **Agent-conversation DAGs** (ADR-032).
 
 ## Alternatives considered
 
-- **Explicit manifest as the primary object.** Rejected as the *primary*: every
-  write would dirty a project-level row, and the manifest is derivable from the
-  log anyway. Kept as the materialization of named states, where it earns its
-  storage.
-- **Derived frontier with no clock.** Rejected: without a total order a frontier
-  is a set of heads with no way to say "the one before this", so states cannot
-  be named, diffed cheaply, or undone. The clock is what makes derivation
-  sufficient.
-- **A timestamp as the cut.** Rejected as a premise: per-file writes are
-  independent transactions and their timestamps are not commit-ordered. The
-  sequence number is assigned under the lock precisely so that it is.
-- **A Postgres `SEQUENCE` for `seq`.** Rejected: not commit-ordered (above).
-- **Re-homing a deleted branch's revisions to `main`** (the earlier behaviour).
-  Rejected: it changes `branch_id` on historical rows, so the state at an
-  earlier `S` on `main` would gain revisions that were never on `main`. A
-  tombstone preserves the past and frees the name.
-- **Project branches as a resolution rule only** (the first draft: a branch
-  set over `main`'s tree, with per-file overrides). Kept for content
-  (`BranchSet`), but not enough once a branch needs its own file set: a rename
-  or an add on the branch has nowhere to live. Hence first-class rows with an
-  explicit per-file index — the mapping the first draft deferred.
-- **A shallow branch index that depends on `main`.** Rejected: see
-  Consequences; the branch would change when `main` changed.
-- **Branch names as identity.** Rejected: reusing a deleted branch's name
-  would attach the old history to the new branch. UUIDs let the name be a
-  label.
+- **`(S, B)` as the project revision** (`ProjectState.at`, `BranchSet`,
+  snapshot = materialized fold, `merge_project`). Rejected: that is a derived
+  frontier, not a stored path DAG. Tip mutation plus a fold cannot name how
+  the tree got from A to B to C. Removed.
+- **Mutated `branch_entries` as the only live index.** Rejected as the project
+  revision (same reason). `main` using `file_nodes.path` while other branches
+  used an index was also rejected: main is a `ProjectBranch` like any other.
+- **Full-flat `project_node_entries` per node.** Built first, then rejected:
+  every path op copied the whole tree. Merkle dirty-spine replaces it.
+- **Delta nodes from the last snapshot, with a compact sweeper.** Rejected the
+  sweeper. History reads are cheap from the last **explicit snapshot** without
+  compacting running nodes. Merkle was chosen for write amplification.
+- **`content_branch_id` on every tree entry.** Rejected: a fork would rewrite
+  every directory (or the child would inherit the parent's line ids). Running
+  content is resolved by project-branch membership so trees can be shared.
+- **Overlay that reads through to `main` for untouched files.** Rejected: the
+  child would move when `main` did. Fork freezes the cut.
+- **HEAD moves onto a snapshot.** Rejected: a snapshot hangs off the running
+  head; content writes must keep landing on the live lines.
+- **Branch names as identity.** Rejected: reuse would attach old history. UUIDs
+  for `FileNode`, `ProjectBranch`, and per-file `Branch` rows; names are labels.
+- **A timestamp as the cut.** Rejected: per-file writes are independent
+  transactions. The clock is commit-ordered; project nodes are hashed.
+- **A Postgres `SEQUENCE` for `seq`.** Rejected: not commit-ordered.
+- **Re-homing a deleted branch's revisions to `main`.** Rejected: it changes
+  the past.
