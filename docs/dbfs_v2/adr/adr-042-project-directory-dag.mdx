@@ -1,12 +1,12 @@
 ---
 title: "ADR-042: Project DAG over per-file DAGs"
-description: "Two graphs: a FileNode UUID is identity (content DAG), and every public path op appends a hashed running node on a merkle directory tree (project DAG). The running head is a live content-line pointer. Snapshots freeze identity-revs and do not move HEAD."
+description: "Two graphs: a FileNode UUID is identity (content DAG), and every public path op appends a hashed running node (project DAG). The running head is a live content-line pointer. Snapshots freeze identity-revs and do not move HEAD. Draft of current behavior — not accepted."
 sidebar:
   order: 42
   badge:
-    text: Accepted
-    variant: success
-status: Accepted
+    text: Proposed
+    variant: caution
+status: Proposed
 implementation_exists: true
 date: "2026-09-20"
 extends:
