@@ -110,9 +110,12 @@ project -> bind
   on a branch (parent = previous running node); a merge node has a second
   parent. Fork hangs the child's first running node off the parent's then-head.
 
-`Store#state(branch:)` is `ProjectDag.view` of that branch's running head: path
-→ identity → live (or frozen) identity-rev. It is not `ProjectState.at(seq:)`.
-`BranchSet`, `merge_project`, and the old `project_snapshots` table are gone.
+`Store#state(branch:, seq:)` is `ProjectDag.view` of that branch at clock `S`
+(omit `seq:` for HEAD): the running node with `seq ≤ S`, each file's
+identity-rev from that line's `branch_heads` reflog (`seq ≤ S`). Live HEAD
+uses the line's current head. It is not `ProjectState.at(seq:)` / `(S, B)` —
+one branch, not a BranchSet fold. `BranchSet`, `merge_project`, and the old
+`project_snapshots` table are gone.
 
 ### Running head
 
@@ -149,8 +152,10 @@ A directory is a content-addressed object:
 - `project_tree_entries` are **basenames**. Folders carry `child_tree_id`;
   snapshot files carry `revision_id`. No `content_branch_id` — forks could not
   share trees if the line id lived on the entry.
-- A project node is `kind`, parents, optional `name`, and `root_tree_id`. Its
-  id is SHA-256 of those fields.
+- A project node is `kind`, parents, optional `name`, `root_tree_id`, and
+  `seq` (the clock at insert). Its id is SHA-256 of kind/parents/name/root —
+  **seq is out of the hash**, so two writers of the same tree still hash-cons;
+  `S` still names when this row was born.
 
 A path op copy-on-writes only the **dirty spine** (changed leaf + ancestor
 dirs). Unchanged sibling directories keep their tree id. A folder move/delete
@@ -188,8 +193,11 @@ Every project has one monotonic counter (`Clock.tick!` inside the writing
 transaction, so seq order is commit order). It stamps:
 
 - each revision
+- each **project-DAG insert** (`project_nodes.seq`; one tick per running or
+  snapshot node)
 - each path-op **notification** (`file_events`: `created` / `renamed` /
-  `deleted` / `restored`; one seq per operation, N rows for a subtree)
+  `deleted` / `restored`; **the node's seq**, N rows for a subtree — not a
+  second tick)
 - branch birth (`branches.seq`, `project_branches.seq`)
 - every head move (`branch_heads` reflog — a fast-forward ticks even when no
   revision is created)
@@ -199,10 +207,11 @@ transaction, so seq order is commit order). It stamps:
 buckets them; restore/find_any walk **parent project nodes**, not the event
 log. Recreating a path over a tombstone is a `created` on the same UUID.
 
-`S` is a stamp across the two graphs (path-op nodes vs content-line heads at
-that clock). It is not an API for "the project at seq S". Examining a branch
-between explicit snapshots including keystrokes would use that stamp; it is
-not `Store#state`.
+`S` is a stamp across the two graphs so you can examine a branch at any point
+between explicit snapshots, including keystrokes: path-op node (`seq ≤ S`) +
+content-line heads (`branch_heads.seq ≤ S`). `Store#state(branch:, seq:)` is
+that cut. Content writes do not append a project node; they only advance the
+line and the clock.
 
 Deleting a per-file or project branch is a tombstone. Revisions keep
 `branch_id`. The name is free (partial unique index). Re-homing history onto
@@ -286,6 +295,7 @@ for moves) is a different surface and is not built.
 ```text
 tree_id = SHA256( "tree\n" + sort_by name: name, file_node_id, ftype, child_tree_id, revision_id )
 node_id = SHA256( kind, parent_id, second_parent_id, name, root_tree_id )
+# project_nodes.seq is stored on the row, not in node_id
 ```
 
 Identical children in any insert order agree. `put_tree!` is content-addressed
@@ -310,10 +320,11 @@ Server (`DbfsV2`):
 
 - Clock, `file_events`, `branch_heads`; revisions and branches stamped with
   `seq`; tombstones; `ProjectGraph`.
-- `project_nodes` (`kind` running|snapshot, parents, `root_tree_id`),
+- `project_nodes` (`kind` running|snapshot, parents, `root_tree_id`, `seq`),
   `project_trees` / `project_tree_entries`; `ProjectDag` (dirty-spine builder,
-  `view`, `lookup` / `flatten`, freeze/snapshot); `BranchFs`;
-  `Store#state(branch:)`, `#snapshot!`.
+  `view(seq:)`, `node_at`, `lookup` / `flatten`, freeze/snapshot); `BranchFs`;
+  `Store#state(branch:, seq:)`, `#snapshot!`. Path-op FileEvents reuse the
+  node's seq.
 - `project_branches` (`head_node_id`, `fork_node_id`, `base_node_id`);
   `ProjectMerge.branches`; `adopt!`; `BranchView`.
 - Identity slot `/.nodes/<uuid>`; PROTOCOL 12 document key.
@@ -334,10 +345,9 @@ Client: workspace branch; explorer event-only patch; tabs keyed by
 3. **Agent file tools** scoped to the workspace project branch.
 4. **A project-identity visualizer** (slider over running nodes, FileEvent
    captions, tree at that node with UUID chips so a move is a transition, not
-   a create+delete). Distinct from `ProjectGraph`.
-5. **`S` as a read API** for "the project between snapshots, including
-   keystrokes" (path-op nodes + content-line heads at `S`). Not `state(seq:)`.
-6. A pending set-level merge still has no stored "merge in progress";
+   a create+delete). Distinct from `ProjectGraph`. `state(branch:, seq:)` is
+   the read cut that slider would step.
+5. A pending set-level merge still has no stored "merge in progress";
    resolutions travel with the next attempt.
 
 ## Out of scope

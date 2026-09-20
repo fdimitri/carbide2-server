@@ -375,14 +375,16 @@ module DbfsV2
       Clock.now(@project_id)
     end
 
-    # The running head of `branch` (default main).
-    def state(branch: nil)
+    # This branch's tree at clock `seq` (default: HEAD). The running node with
+    # seq ≤ S, each file's identity-rev from `branch_heads` at seq ≤ S. Omit
+    # `seq:` for live lines. Not `(S, B)` — one branch, not a BranchSet fold.
+    def state(branch: nil, seq: nil)
       pb = if branch
              branch.is_a?(ProjectBranch) ? branch : (project_branch(branch) || main_branch)
            else
              main_branch
            end
-      ProjectDag.view(pb)
+      ProjectDag.view(pb, seq: seq)
     end
 
     # Freeze the running head's identity-revs as a snapshot node. HEAD stays

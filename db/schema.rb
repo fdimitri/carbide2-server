@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_20_030000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_20_040000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -295,11 +295,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_20_030000) do
     t.bigint "project_id", null: false
     t.string "root_tree_id", limit: 64
     t.string "second_parent_id", limit: 64
+    t.bigint "seq", null: false
     t.datetime "updated_at", null: false
     t.bigint "user_id"
+    t.index ["project_branch_id", "seq"], name: "index_project_nodes_on_project_branch_id_and_seq"
     t.index ["project_branch_id"], name: "index_project_nodes_on_project_branch_id"
     t.index ["project_id", "kind"], name: "index_project_nodes_on_project_id_and_kind"
     t.index ["project_id", "name"], name: "index_project_nodes_snapshot_name", unique: true, where: "(((kind)::text = 'snapshot'::text) AND (name IS NOT NULL))"
+    t.index ["project_id", "seq"], name: "index_project_nodes_on_project_id_and_seq"
     t.index ["project_id"], name: "index_project_nodes_on_project_id"
     t.index ["root_tree_id"], name: "index_project_nodes_on_root_tree_id"
   end

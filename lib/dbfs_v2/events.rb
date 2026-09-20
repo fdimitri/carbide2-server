@@ -3,23 +3,25 @@ module DbfsV2
   # Events — notifications for a path op (explorer / seq clock).
   #
   # Store#create_*, #delete, #restore and #move each record one operation:
-  # one Clock tick, one or more FileEvent rows sharing that seq (a subtree
-  # delete or a folder move is one operation). The project tree is the DAG,
-  # not a fold of these rows.
+  # the project node's seq, one or more FileEvent rows sharing that seq (a
+  # subtree delete or a folder move is one operation). Pass `seq:` from the
+  # node so the cut S names the tree and the notifications together. The
+  # project tree is the DAG, not a fold of these rows.
   module Events
     module_function
 
     # rows: [{ file_node_id:, path:, ftype:, from_path: (renamed only) }]
     # `branch`: the ProjectBranch whose existence log this is (nil = main).
+    # `seq`: the project node's seq when this is a path op; ticks if omitted.
     # Returns the seq the operation took.
-    def record!(project_id, kind, rows, user_id: nil, branch: nil)
+    def record!(project_id, kind, rows, user_id: nil, branch: nil, seq: nil)
       raise ArgumentError, "unknown event kind #{kind}" unless FileEvent::KINDS.include?(kind.to_s)
       rows = Array(rows)
       return nil if rows.empty?
 
       pb_id = (branch || ProjectBranch.main_for(project_id)).id
       ActiveRecord::Base.transaction do
-        seq = Clock.tick!(project_id)
+        seq ||= Clock.tick!(project_id)
         now = Time.now.utc
         FileEvent.insert_all!(rows.map do |r|
           {

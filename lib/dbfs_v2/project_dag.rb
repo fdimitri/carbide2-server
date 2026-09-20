@@ -68,7 +68,7 @@ module DbfsV2
               root_tree_id: new_root, user_id: user_id)
     end
 
-    def snapshot!(branch, name: nil, user_id: nil)
+    def snapshot!(branch, name: nil, user_id: nil, seq: nil)
       head = branch.head_node
       raise ArgumentError, 'nothing to snapshot' unless head
       if name && ProjectNode.snapshots.where(project_id: branch.project_id, name: name).exists?
@@ -78,17 +78,17 @@ module DbfsV2
       end
       root = freeze_tree(head.root_tree_id, branch)
       insert!(branch, parent: head, kind: ProjectNode::SNAPSHOT, name: name,
-              root_tree_id: root, user_id: user_id)
+              root_tree_id: root, user_id: user_id, seq: seq)
     end
 
     # Unnamed snapshot of the running head. Used as a fork/merge-base cut so
     # later writes on those content lines cannot move the recorded tree.
-    def freeze!(branch, user_id: nil)
+    def freeze!(branch, user_id: nil, seq: nil)
       return nil unless branch.head_node
-      snapshot!(branch, name: nil, user_id: user_id)
+      snapshot!(branch, name: nil, user_id: user_id, seq: seq)
     end
 
-    def insert!(branch, parent:, root_tree_id:, kind:, second_parent: nil, name: nil, user_id: nil)
+    def insert!(branch, parent:, root_tree_id:, kind:, second_parent: nil, name: nil, user_id: nil, seq: nil)
       root_tree_id ||= put_tree!([])
       id = node_hash(parent_id: parent&.id, second_parent_id: second_parent&.id,
                      kind: kind, name: name, root_tree_id: root_tree_id)
@@ -96,10 +96,11 @@ module DbfsV2
       node = nil
       begin
         ActiveRecord::Base.transaction(requires_new: true) do
+          seq ||= Clock.tick!(branch.project_id)
           node = ProjectNode.create!(
             id: id, project_id: branch.project_id, project_branch_id: branch.id,
             parent_id: parent&.id, second_parent_id: second_parent&.id,
-            root_tree_id: root_tree_id,
+            root_tree_id: root_tree_id, seq: seq,
             kind: kind, name: name, user_id: user_id, created_at: now, updated_at: now
           )
         end
@@ -146,10 +147,13 @@ module DbfsV2
     end
 
     # HEAD of `branch` (or a specific node) as a ProjectState view: paths and
-    # the live (or frozen) identity-rev of each file.
-    def view(branch, node: nil)
+    # the live (or frozen) identity-rev of each file. `seq:` is a clock cut:
+    # the running node with seq ≤ S, content from each line's reflog at S.
+    def view(branch, node: nil, seq: nil)
       n = node
-      if n.nil?
+      if n.nil? && !seq.nil?
+        n = node_at(branch, seq)
+      elsif n.nil?
         hid = ProjectBranch.where(id: branch.id).pick(:head_node_id)
         n = hid && ProjectNode.find_by(id: hid)
       end
@@ -159,7 +163,13 @@ module DbfsV2
         lines = content_lines(rows.map(&:file_node_id), n.snapshot? ? n.project_branch : branch)
         rows.each do |e|
           cb = lines[e.file_node_id]
-          rev = n.snapshot? ? e.revision_id : (cb&.head_revision_id || e.revision_id)
+          rev = if n.snapshot?
+                  e.revision_id
+                elsif seq
+                  revision_at(cb, seq) || e.revision_id
+                else
+                  cb&.head_revision_id || e.revision_id
+                end
           entries[e.file_node_id] = ProjectState::Entry.new(
             file_node_id: e.file_node_id, path: e.path, ftype: e.ftype,
             branch: cb&.name, revision_id: rev
@@ -167,6 +177,30 @@ module DbfsV2
         end
       end
       ProjectState.new(project_id: branch.project_id, entries: entries)
+    end
+
+    # Latest running node on `branch` whose seq is ≤ `seq`. Walks the parent
+    # chain from HEAD so a hash-consed first node (shared id, first writer's
+    # project_branch_id) still counts. Stops before walking into the parent
+    # branch's history when this branch was born after `seq`.
+    def node_at(branch, seq)
+      seq = seq.to_i
+      born = branch.seq.to_i
+      return nil if !branch.main? && seq < born
+      hid = ProjectBranch.where(id: branch.id).pick(:head_node_id)
+      n = hid && ProjectNode.find_by(id: hid)
+      while n
+        return n if n.running? && n.seq.to_i <= seq
+        parent = n.parent
+        break if parent && n.project_branch_id == branch.id && parent.project_branch_id != branch.id && n.seq.to_i > seq
+        n = parent
+      end
+      nil
+    end
+
+    def revision_at(content_branch, seq)
+      return nil unless content_branch
+      BranchHead.where(branch_id: content_branch.id, seq: ..seq.to_i).order(seq: :desc).limit(1).pick(:revision_id)
     end
 
     def lookup(node, path)

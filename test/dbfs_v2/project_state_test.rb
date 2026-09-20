@@ -1,8 +1,9 @@
 # frozen_string_literal: true
 require_relative 'dbfs_v2_test_helper'
 
-# The project clock, FileEvents as notifications, and the running-head view
-# (Store#state). Past trees are parent project-DAG nodes, not a seq fold.
+# The project clock, FileEvents as notifications, and Store#state.
+# state(branch:, seq:) is this branch at clock S (path-op node + reflog).
+# Omit seq: for the running head. Not a BranchSet fold.
 class ProjectStateTest < Minitest::Test
   include StoreTestHelpers
 
@@ -167,5 +168,80 @@ class ProjectStateTest < Minitest::Test
     assert @s.main_branch.head_entries.exists?(path: '/b')
     assert_raises(ActiveRecord::RecordInvalid) { @s.snapshot!('v1') }
     assert_equal ['v1'], @s.snapshots.where.not(name: nil).map(&:name)
+  end
+
+  def test_a_path_op_node_and_its_events_share_one_seq
+    @s.create_file('/a/b/c.txt', content: 'x')
+    node = @s.main_branch.head_node
+    ev = FileEvent.where(project_id: @s.project_id, kind: 'created').order(:path)
+    assert_equal %w[/a /a/b /a/b/c.txt], ev.pluck(:path)
+    assert_equal [node.seq], ev.pluck(:seq).uniq
+    assert_equal node.seq, @s.seq, 'the path op is the last tick; events did not tick again'
+
+    @s.move('/a/b/c.txt', '/other/c.txt')
+    moved = @s.main_branch.head_node
+    created = FileEvent.where(project_id: @s.project_id, kind: 'created', path: '/other')
+    renamed = FileEvent.where(project_id: @s.project_id, kind: 'renamed')
+    assert_equal moved.seq, created.pick(:seq)
+    assert_equal [moved.seq], renamed.pluck(:seq).uniq
+    refute_equal node.seq, moved.seq
+  end
+
+  def test_content_writes_do_not_stamp_a_new_project_seq
+    @s.create_file('/f', content: "v1\n")
+    node = @s.main_branch.head_node
+    seq = node.seq
+    @s.write('/f', ins(1, 0, 'x'))
+    assert_equal node.id, @s.main_branch.reload.head_node_id
+    assert_equal seq, @s.main_branch.head_node.seq
+    assert_operator @s.seq, :>, seq
+  end
+
+  def test_state_at_seq_is_the_tree_and_content_at_that_cut
+    @s.create_file('/a', content: "A\n")
+    s_create = @s.main_branch.head_node.seq
+    id_a = @s.find('/a').id
+    @s.write('/a', ins(1, 0, 'more'))
+    s_write = @s.seq
+    @s.create_file('/b', content: "B\n")
+    s_b = @s.main_branch.head_node.seq
+    @s.delete('/a')
+
+    early = @s.state(seq: s_create)
+    assert_equal ['/a'], early.paths
+    assert_equal "A\n", early.read('/a')
+    assert_equal id_a, early['/a'].file_node_id
+
+    mid = @s.state(seq: s_write)
+    assert_equal ['/a'], mid.paths
+    assert_equal "A\nmore", mid.read('/a')
+
+    later = @s.state(seq: s_b)
+    assert_equal ['/a', '/b'], later.paths
+    assert_equal "A\nmore", later.read('/a')
+    assert_equal "B\n", later.read('/b')
+
+    assert_equal ['/b'], @s.state.paths
+    assert_empty @s.state(seq: 0).paths
+  end
+
+  def test_state_at_seq_on_a_project_branch_does_not_follow_later_edits
+    @s.create_file('/f', content: "main\n")
+    pb = @s.create_project_branch('feature')
+    fork_seq = pb.head_node.seq
+    @s.write('/f', ins(0, 0, 'feat '), branch: 'feature')
+    @s.write('/f', ins(0, 0, 'MAIN '))
+    @s.create_file('/only-main', content: 'x')
+
+    cut = @s.state(branch: 'feature', seq: fork_seq)
+    assert_equal ['/f'], cut.paths
+    assert_equal "main\n", cut.read('/f')
+
+    live = @s.state(branch: 'feature')
+    assert_equal ['/f'], live.paths
+    assert_equal "feat main\n", live.read('/f')
+    assert @s.state.include?('/only-main')
+    refute live.include?('/only-main')
+    assert_empty @s.state(branch: 'feature', seq: pb.seq - 1).paths
   end
 end

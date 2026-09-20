@@ -10,7 +10,8 @@ module DbfsV2
   #
   # FileNode is identity (uuid, posix, content DAG); its path column is a
   # unique slot, not the user-visible location. FileEvents are notifications
-  # (explorer / seq clock), not the source of the tree.
+  # (explorer / seq clock), not the source of the tree: they reuse the
+  # project node's seq so a cut S names the tree and the notifications.
   class BranchFs
     # A FileNode as this branch sees it: the project's path and ftype, the
     # node's everything else (id, revisions, branches, posix, symlink target).
@@ -209,8 +210,8 @@ module DbfsV2
         if bind_content && cb && content && !content.empty?
           @store.seed_content!(record, cb, content, binary: binary, user_id: user_id)
         end
-        commit_path_op!(add: pending, user_id: user_id)
-        Events.record!(project_id, :created, event_rows_from(pending), user_id: user_id, branch: @branch)
+        n = commit_path_op!(add: pending, user_id: user_id)
+        Events.record!(project_id, :created, event_rows_from(pending), user_id: user_id, branch: @branch, seq: n.seq)
         node = find(p)
       end
       node
@@ -226,8 +227,8 @@ module DbfsV2
         collect_missing_dirs!(File.dirname(p), pending, user_id)
         raise "destination already exists: #{p}" if live_path?(p, pending)
         collect_missing_dirs!(p, pending, user_id, owner: owner, group: group, mode: mode)
-        commit_path_op!(add: pending, user_id: user_id)
-        Events.record!(project_id, :created, event_rows_from(pending), user_id: user_id, branch: @branch)
+        n = commit_path_op!(add: pending, user_id: user_id)
+        Events.record!(project_id, :created, event_rows_from(pending), user_id: user_id, branch: @branch, seq: n.seq)
         find(p)
       end
     end
@@ -243,8 +244,8 @@ module DbfsV2
         place_file!(p, pending, owner: nil, group: nil, mode: 0o777,
                     user_id: user_id, binary: false, bind_content: true,
                     symlink_target: norm(target))
-        commit_path_op!(add: pending, user_id: user_id)
-        Events.record!(project_id, :created, event_rows_from(pending), user_id: user_id, branch: @branch)
+        n = commit_path_op!(add: pending, user_id: user_id)
+        Events.record!(project_id, :created, event_rows_from(pending), user_id: user_id, branch: @branch, seq: n.seq)
         find(p)
       end
     end
@@ -258,8 +259,8 @@ module DbfsV2
       ActiveRecord::Base.transaction do
         lock_tip!
         rows = subtree(node.path)
-        commit_path_op!(remove_paths: [node.path], user_id: user_id)
-        Events.record!(project_id, :deleted, event_rows(rows), user_id: user_id, branch: @branch)
+        n = commit_path_op!(remove_paths: [node.path], user_id: user_id)
+        Events.record!(project_id, :deleted, event_rows(rows), user_id: user_id, branch: @branch, seq: n.seq)
       end
       find_any(path)
     end
@@ -291,9 +292,9 @@ module DbfsV2
             pending << { file_node_id: e.file_node_id, path: e.path, ftype: e.ftype }
           end
         end
-        commit_path_op!(add: pending, user_id: user_id)
+        n = commit_path_op!(add: pending, user_id: user_id)
         Events.record!(project_id, :restored, event_rows(rows.reject { |e| live_ids.include?(e.file_node_id) }),
-                       user_id: user_id, branch: @branch)
+                       user_id: user_id, branch: @branch, seq: n.seq)
       end
       find(path)
     end
@@ -320,9 +321,9 @@ module DbfsV2
           new_path = e.file_node_id == node.id ? to_path : "#{to_path}#{old_path.delete_prefix(node.path)}"
           { file_node_id: e.file_node_id, from_path: old_path, ftype: e.ftype, path: new_path }
         end
-        commit_path_op!(add: pending, rewrite: rewrite, user_id: user_id)
-        Events.record!(project_id, :created, event_rows_from(pending), user_id: user_id, branch: @branch) if pending.any?
-        Events.record!(project_id, :renamed, renamed, user_id: user_id, branch: @branch)
+        n = commit_path_op!(add: pending, rewrite: rewrite, user_id: user_id)
+        Events.record!(project_id, :created, event_rows_from(pending), user_id: user_id, branch: @branch, seq: n.seq) if pending.any?
+        Events.record!(project_id, :renamed, renamed, user_id: user_id, branch: @branch, seq: n.seq)
       end
       find(to_path)
     end
@@ -362,15 +363,15 @@ module DbfsV2
         clash = head_lookup(p)
         raise "destination already exists: #{p}" if clash && clash.file_node_id != record.id
         cb = (ftype == 'file') ? bind_line!(record, at: revision_id, force_at: true) : nil
-        if head_lookup_id(record.id)
-          commit_path_op!(add: pending, rewrite: { record.id => { path: p, ftype: ftype, revision_id: nil } },
-                          user_id: user_id)
-        else
-          pending << { file_node_id: record.id, path: p, ftype: ftype }
-          commit_path_op!(add: pending, user_id: user_id)
-        end
+        n = if head_lookup_id(record.id)
+              commit_path_op!(add: pending, rewrite: { record.id => { path: p, ftype: ftype, revision_id: nil } },
+                              user_id: user_id)
+            else
+              pending << { file_node_id: record.id, path: p, ftype: ftype }
+              commit_path_op!(add: pending, user_id: user_id)
+            end
         Events.record!(project_id, :created, [{ file_node_id: record.id, path: p, ftype: ftype }],
-                       user_id: user_id, branch: @branch)
+                       user_id: user_id, branch: @branch, seq: n.seq)
         find(p)
       end
     end
@@ -397,10 +398,11 @@ module DbfsV2
 
     def commit_path_op!(add: [], remove_ids: [], remove_paths: [], rewrite: {},
                         second_parent: nil, inherit: true, user_id: nil)
-      ProjectDag.advance!(@branch, add: add, remove_ids: remove_ids, remove_paths: remove_paths,
-                          rewrite: rewrite, second_parent: second_parent, inherit: inherit, user_id: user_id)
+      node = ProjectDag.advance!(@branch, add: add, remove_ids: remove_ids, remove_paths: remove_paths,
+                                 rewrite: rewrite, second_parent: second_parent, inherit: inherit, user_id: user_id)
       @index_hid = nil
       @branch.reload
+      node
     end
 
     def ids_under(path)
