@@ -329,4 +329,16 @@ class ProjectStateTest < Minitest::Test
     assert_equal 'feature', merge[:from]
     refute axis[:segments].any? { |s| s[:branch] == 'feature' }
   end
+
+  def test_create_file_with_content_is_one_clock_cut
+    n = @s.create_file('/one-cut.txt', content: 'hello')
+    seq = @s.main_branch.head_node.seq
+    assert_equal seq, @s.seq, 'seeded create shares the running-node seq'
+    at = @s.identity_at(seq: seq)
+    e = at[:entries].find { |x| x[:path] == '/one-cut.txt' }
+    assert e, at[:entries].inspect
+    refute_nil e[:revision_id], 'identity_at at the create tick has content'
+    assert_equal n.id, e[:id]
+    assert_equal 'hello', @s.read('/one-cut.txt')
+  end
 end

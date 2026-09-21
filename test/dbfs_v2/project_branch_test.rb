@@ -182,4 +182,17 @@ class ProjectBranchTest < Minitest::Test
     pv = @s.merge_preview('/lib/b.rb', target: 'main', source: 'feature', branch: 'feature')
     assert pv[:clean], 'untouched on feature: its content row is created at the pin, nothing to merge'
   end
+
+  def test_detached_content_line_on_a_file_that_is_not_on_main
+    @s.create_project_branch('feature')
+    node = @s.create_file('/lib/only.rb', content: "only\n", branch: 'feature')
+    @s.branch_at(node, 'edit', from: 'feature', project_branch_id: @s.project_branch('feature').id)
+    @s.write_at(node, 'edit', set("edited\n"))
+    assert_equal "edited\n", @s.read_at(node, branch: 'edit')
+    assert_nil @s.read('/lib/only.rb', branch: 'edit'), 'path lookup of a detached line is main'
+    assert_equal "only\n", @s.read('/lib/only.rb', branch: 'feature')
+    found = @s.find_id(node.id, branch: 'feature')
+    assert_equal '/lib/only.rb', found.path
+    refute found.path.start_with?(DbfsV2::BranchFs::IDENTITY_PREFIX)
+  end
 end

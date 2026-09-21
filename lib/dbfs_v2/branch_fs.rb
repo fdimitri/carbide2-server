@@ -208,12 +208,16 @@ module DbfsV2
         pending = []
         collect_missing_dirs!(File.dirname(p), pending, user_id)
         raise "destination already exists: #{p}" if live_path?(p, pending)
+        # One public create is one clock tick: content seed, content-line
+        # birth, and the running node share `seq` so identity_at at the tick
+        # sees the tree and the bytes together.
+        seq = Clock.tick!(project_id)
         record, cb = place_file!(p, pending, owner: owner, group: group, mode: mode,
-                                 user_id: user_id, binary: binary, bind_content: bind_content)
+                                 user_id: user_id, binary: binary, bind_content: bind_content, seq: seq)
         if bind_content && cb && content && !content.empty?
-          @store.seed_content!(record, cb, content, binary: binary, user_id: user_id)
+          @store.seed_content!(record, cb, content, binary: binary, user_id: user_id, seq: seq)
         end
-        n = commit_path_op!(add: pending, user_id: user_id)
+        n = commit_path_op!(add: pending, user_id: user_id, seq: seq)
         Events.record!(project_id, :created, event_rows_from(pending), user_id: user_id, branch: @branch, seq: n.seq)
         node = find(p)
       end
@@ -400,9 +404,10 @@ module DbfsV2
     end
 
     def commit_path_op!(add: [], remove_ids: [], remove_paths: [], rewrite: {},
-                        second_parent: nil, inherit: true, user_id: nil)
+                        second_parent: nil, inherit: true, user_id: nil, seq: nil)
       node = ProjectDag.advance!(@branch, add: add, remove_ids: remove_ids, remove_paths: remove_paths,
-                                 rewrite: rewrite, second_parent: second_parent, inherit: inherit, user_id: user_id)
+                                 rewrite: rewrite, second_parent: second_parent, inherit: inherit, user_id: user_id,
+                                 seq: seq)
       @index_hid = nil
       @branch.reload
       node
@@ -417,7 +422,7 @@ module DbfsV2
       e ? { e.file_node_id => { path: to } } : {}
     end
 
-    def bind_line!(record, at: nil, force_at: false)
+    def bind_line!(record, at: nil, force_at: false, seq: nil)
       cb = record.branches.find_by(name: @branch.name)
       if cb
         cb.update_columns(project_branch_id: @branch.id) unless cb.project_branch_id == @branch.id
@@ -429,8 +434,10 @@ module DbfsV2
         end
         return cb
       end
-      record.branches.create!(name: @branch.name, project_branch_id: @branch.id,
-                              head_revision_id: at, origin_revision_id: at)
+      attrs = { name: @branch.name, project_branch_id: @branch.id,
+                head_revision_id: at, origin_revision_id: at }
+      attrs[:seq] = seq if seq
+      record.branches.create!(attrs)
     end
 
     private
@@ -586,18 +593,18 @@ module DbfsV2
       end
     end
 
-    def place_file!(path, pending, owner:, group:, mode:, user_id:, binary:, bind_content:, symlink_target: nil)
+    def place_file!(path, pending, owner:, group:, mode:, user_id:, binary:, bind_content:, symlink_target: nil, seq: nil)
       ghost = ancestor_entry_by_path(path)
       if ghost && ghost[:entry].ftype == 'file'
         record = ghost[:entry].file_node
         record.update_columns(binary: binary, symlink_target: symlink_target, updated_at: Time.current)
-        cb = bind_content ? bind_line!(record) : nil
+        cb = bind_content ? bind_line!(record, seq: seq) : nil
         pending << { file_node_id: record.id, path: path, ftype: 'file', content_branch_id: cb&.id }
         return [record, cb]
       end
       record = mint_identity!(path, ftype: 'file', owner: owner, group: group, mode: mode,
                               user_id: user_id, binary: binary, symlink_target: symlink_target)
-      cb = bind_content ? bind_line!(record) : nil
+      cb = bind_content ? bind_line!(record, seq: seq) : nil
       pending << { file_node_id: record.id, path: path, ftype: 'file', content_branch_id: cb&.id }
       [record, cb]
     end

@@ -47,5 +47,7 @@ class BranchLockTest < Minitest::Test
                     'lock_head! takes FOR SHARE on the project branch row'
     assert_includes model, 'ProjectBranch.lock("FOR SHARE")',
                     'SHARE is on ProjectBranch, not the per-file line'
+    assert_includes model, 'ProjectBranch.live.where(project_id: pid).lock("FOR SHARE")',
+                    'a detached per-file line still SHARE-locks the project branches'
   end
 end

@@ -9,9 +9,11 @@ module DbfsV2
   # Postgres SEQUENCE would not give (a transaction that drew 41 may commit
   # after the one that drew 42).
   #
-  # Every revision ticks once (Revision#stamp_seq). Every project-DAG insert
-  # ticks once (`project_nodes.seq`); FileEvents for that path op reuse the
-  # node's seq so a cut S names the tree and the notifications together.
+  # Every revision ticks once (Revision#stamp_seq) unless the caller already
+  # stamped `seq` — a seeded create reuses the running-node tick so the tree
+  # and genesis bytes share a cut. Every project-DAG insert ticks once
+  # (`project_nodes.seq`); FileEvents for that path op reuse the node's seq
+  # so a cut S names the tree and the notifications together.
   # Content-line heads at S come from `branch_heads` (seq ≤ S).
   module Clock
     module_function

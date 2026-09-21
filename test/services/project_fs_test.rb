@@ -50,6 +50,20 @@ class ProjectFsTest < Minitest::Test
     assert_equal ['main'], @s.find('/f').branches.pluck(:name)
   end
 
+  def test_batch_on_a_detached_content_line_locates_via_the_project_tree
+    @s.create_project_branch('feature')
+    node = @s.create_file('/only.rb', content: "x\n", branch: 'feature')
+    @s.branch_at(node, 'edit', from: 'feature', project_branch_id: @s.project_branch('feature').id)
+    base = node.branches.find_by!(name: 'edit').head_revision_id
+    r = ProjectFs.write_batch!(@s, '/only.rb', [ins(0, 1, 'y')], base_revision_id: base,
+                               branch: 'edit', tree: 'feature')
+    assert_equal :append, r.mode
+    assert_equal "xy\n", @s.read_at(node, branch: 'edit')
+    assert_equal "x\n", @s.read('/only.rb', branch: 'feature'), 'the project-branch line is untouched'
+    assert_nil @s.find('/only.rb'), 'still absent from main'
+    assert_raises(RuntimeError) { ProjectFs.write_batch!(@s, '/only.rb', [ins(0, 1, 'z')], branch: 'edit') }
+  end
+
   # A stale batch is auto-branched at its base (as authored), then rebased onto
   # main one edit at a time.
   def test_stale_batch_auto_branches_and_rebases

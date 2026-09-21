@@ -151,4 +151,16 @@ class ProjectBranchMergeTest < Minitest::Test
     @s.create_project_branch('other')
     assert_raises(ArgumentError) { @s.merge_branches(source: 'feature', target: 'other') }
   end
+
+  def test_apply_raises_when_a_delete_does_not_match
+    tgt = @s.project_branch('main')
+    src = @s.project_branch('feature')
+    ours = @s.state.entries
+    err = assert_raises(RuntimeError) do
+      DbfsV2::ProjectMerge.apply!(@s, tgt, src,
+                                  [{ kind: 'delete', path: '/no-such', node: SecureRandom.uuid }],
+                                  ours, [], [], nil)
+    end
+    assert_match(/delete/, err.message)
+  end
 end

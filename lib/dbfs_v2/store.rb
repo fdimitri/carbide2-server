@@ -33,11 +33,11 @@ module DbfsV2
     end
 
     # First content of a new file on a per-file branch row.
-    def seed_content!(node, b, content, binary: false, user_id: nil)
+    def seed_content!(node, b, content, binary: false, user_id: nil, seq: nil)
       if binary
-        write_blob_on(node, b, content, user_id: user_id)
+        write_blob_on(node, b, content, user_id: user_id, seq: seq)
       else
-        append!(node, b, Delta.new('setContents', { data: content }), user_id: user_id)
+        append!(node, b, Delta.new('setContents', { data: content }), user_id: user_id, seq: seq)
       end
     end
 
@@ -128,13 +128,20 @@ module DbfsV2
       # Detached per-file branch: path is on main's index, content under `branch`.
       node = find(path)
       return nil unless node
-      node = node.resolve
+      read_at(node, branch: branch, revision_id: revision_id)
+    end
+    alias read_content read
+
+    # Content of a node already in hand (found on any project tree). A
+    # detached per-file line is not a project branch, so `read(path, branch:)`
+    # would miss a file that only lives on a non-main tree.
+    def read_at(node, branch: Branch::MAIN, revision_id: nil)
+      node = node.resolve if node.respond_to?(:resolve)
       return nil unless node && node.ftype == 'file'
       record = node.respond_to?(:record) ? node.record : node
       return Content.at(record, revision_id) if revision_id
       Content.head_cached(record, branch)
     end
-    alias read_content read
 
     # Apply a single edit (one keystroke == one delta) to a file on a branch.
     # `base_revision_id` is the revision the client based its edit on; when it
@@ -244,11 +251,12 @@ module DbfsV2
     def branch(path, name, from: Branch::MAIN, at_revision: nil, branch: Branch::MAIN)
       node, = locate(path, branch, for_write: true)
       raise "no such file: #{path}" unless node
-      branch_at(node, name, from: from, at_revision: at_revision)
+      pb = project_branch(branch) || main_branch
+      branch_at(node, name, from: from, at_revision: at_revision, project_branch_id: pb&.id)
     end
 
     # branch() for a node already in hand.
-    def branch_at(node, name, from: Branch::MAIN, at_revision: nil)
+    def branch_at(node, name, from: Branch::MAIN, at_revision: nil, project_branch_id: nil)
       path = node.path
       head =
         if at_revision
@@ -260,10 +268,12 @@ module DbfsV2
         end
       # A branch is born with a seq and its origin (ADR-042): a project state
       # cut before `seq` does not see it; one cut after it, before its first
-      # commit, resolves to the origin.
+      # commit, resolves to the origin. `project_branch_id` puts the line in
+      # the SHARE/UPDATE lock set with that project branch's path ops.
       node.branches.find_or_create_by!(name: name) do |nb|
         nb.head_revision_id   = head
         nb.origin_revision_id = head
+        nb.project_branch_id  = project_branch_id
       end
     end
 
@@ -410,7 +420,7 @@ module DbfsV2
           sp_branch[id.to_s] = bid.to_s
         end
         extra = sp_branch.values - names.keys
-        names.merge!(ProjectBranch.where(id: extra).pluck(:id, :name).to_h.transform_keys(&:to_s)) if extra.any?
+        names.merge!(ProjectBranch.unscoped.where(id: extra).pluck(:id, :name).to_h.transform_keys(&:to_s)) if extra.any?
       end
 
       chain_ids = running.map { |r| r['id'] }
@@ -682,9 +692,9 @@ module DbfsV2
 
     # Append a revision and advance the branch head. `parent` is implicit (the
     # branch's current head).
-    def append!(node, branch, delta, user_id: nil, second_parent_id: nil)
+    def append!(node, branch, delta, user_id: nil, second_parent_id: nil, seq: nil)
       parent_id = branch.head_revision_id
-      rev = Revision.create!(
+      rev = Revision.new(
         file_node_id: node.id,
         project_id: @project_id,
         parent_id: parent_id,
@@ -696,6 +706,8 @@ module DbfsV2
         user_id: user_id,
         timestamp: Time.now.utc
       )
+      rev.seq = seq if seq
+      rev.save!
       branch.update!(head_revision_id: rev.id)
       node.update_columns(mtime: Time.current, updated_at: Time.current)
       # Advance the in-memory cache only AFTER the surrounding transaction
@@ -728,10 +740,10 @@ module DbfsV2
     end
 
     # Write a binary blob revision (content-addressed) and advance the head.
-    def write_blob_on(node, branch, bytes, user_id: nil)
+    def write_blob_on(node, branch, bytes, user_id: nil, seq: nil)
       bytes = bytes.to_s.b
       digest = Blob.store(bytes)
-      commit_blob_revision(node, branch, digest, bytes.bytesize, user_id)
+      commit_blob_revision(node, branch, digest, bytes.bytesize, user_id, seq: seq)
     end
 
     # Create a `writeBinary` revision that references an already-stored digest
@@ -775,8 +787,8 @@ module DbfsV2
     public :head_blob_digest
 
     # Low-level: append a writeBinary revision for `digest` and advance the head.
-    def commit_blob_revision(node, branch, digest, size, user_id)
-      rev = Revision.create!(
+    def commit_blob_revision(node, branch, digest, size, user_id, seq: nil)
+      rev = Revision.new(
         file_node_id: node.id,
         project_id: @project_id,
         parent_id: branch.head_revision_id,
@@ -787,6 +799,8 @@ module DbfsV2
         user_id: user_id,
         timestamp: Time.now.utc
       )
+      rev.seq = seq if seq
+      rev.save!
       branch.update!(head_revision_id: rev.id)
       node.update_columns(last_size: size, mtime: Time.current, updated_at: Time.current)
       rev

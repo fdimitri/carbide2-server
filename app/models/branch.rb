@@ -25,8 +25,16 @@ class Branch < ApplicationRecord
   # write waits for an in-flight freeze. Two content writers still SHARE
   # together.
   def self.lock_head!(id)
-    pb_id = unscoped.where(id: id).pick(:project_branch_id)
-    ProjectBranch.lock("FOR SHARE").find(pb_id) if pb_id
+    pb_id, fn_id = unscoped.where(id: id).pick(:project_branch_id, :file_node_id)
+    if pb_id
+      ProjectBranch.lock("FOR SHARE").find(pb_id)
+    elsif fn_id
+      # Detached per-file line: still wait behind (and block) a freeze on any
+      # live project branch of this file's project, so a cut at S cannot miss
+      # an in-flight write.
+      pid = FileNode.where(id: fn_id).pick(:project_id)
+      ProjectBranch.live.where(project_id: pid).lock("FOR SHARE").to_a if pid
+    end
     lock.find(id)
   end
 

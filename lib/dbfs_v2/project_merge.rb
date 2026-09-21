@@ -217,7 +217,9 @@ module DbfsV2
         case a[:kind]
         when 'delete'
           node = store.find(a[:path], branch: b)
-          next unless node && node.id == a[:node]
+          unless node && node.id == a[:node]
+            raise "project merge: delete #{a[:path]} did not match node #{a[:node]}"
+          end
           remove_ids << a[:node]
           paths.reject! { |_, p| p == a[:path] || p.start_with?("#{a[:path]}/") }
           applied << a
@@ -225,7 +227,9 @@ module DbfsV2
           cur = store.find(a[:to], branch: b)
           next if cur && cur.id == a[:node]
           from = paths[a[:node]]
-          next unless from && store.find(from, branch: b)&.id == a[:node]
+          unless from && store.find(from, branch: b)&.id == a[:node]
+            raise "project merge: move #{a[:node]} to #{a[:to]} missed"
+          end
           fs.rewrites_for_move(from, a[:to]).each { |id, attrs| rewrite[id] = attrs }
           paths.each { |id, p| paths[id] = "#{a[:to]}#{p.delete_prefix(from)}" if p == from || p.start_with?("#{from}/") }
           applied << a.merge(from: from)
@@ -256,7 +260,7 @@ module DbfsV2
           sname = source_row_name(record, a[:source_revision])
           unless sname
             conflicts << Conflict.new(node_id: a[:node], kind: 'content', detail: 'source revision has no branch row',
-                                      ours: { path: node.path, revision_id: a[:ours_revision] },
+                                      ours: { path: node.path, revision_id: a[:ours_revision], branch: tname },
                                       theirs: { path: node.path, revision_id: a[:source_revision] })
             next
           end

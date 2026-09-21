@@ -214,13 +214,21 @@ module ProjectFs
   #
   # Auto-branches are never deleted: revisions.branch_id cascades, so dropping
   # the branch row would drop the batch as authored.
-  def write_batch!(store, path, deltas, base_revision_id: nil, user_id: nil, branch: Branch::MAIN)
-    # The node as `branch` sees it (a project branch's index, or main's), and
-    # the per-file branch its content lives under — created at the pinned
-    # revision if this is the project branch's first write to the file.
-    node, bname = store.locate(path, branch, for_write: true)
+  def write_batch!(store, path, deltas, base_revision_id: nil, user_id: nil, branch: Branch::MAIN, tree: nil)
+    # `branch` is the per-file content line. `tree` is the project DAG that
+    # locates the path (PROTOCOL 14 two-DAG). When `branch` itself names a
+    # project branch, it is both. A detached content line (`my-edit`, `auto/…`)
+    # is not a project tree — without `tree` it would locate on main and miss
+    # a file that only lives on another project branch.
+    content = branch.to_s.presence || Branch::MAIN
+    loc = tree.to_s.presence
+    loc = content if loc.blank? || !store.project_branch(loc)
+    tree_name = store.project_branch(loc)&.name || store.project_branch(content)&.name || Branch::MAIN
+    bind = !store.project_branch(content).nil?
+    node, located = store.locate(path, tree_name, for_write: bind)
     raise "no such file: #{path}" unless node
     node = node.resolve || node
+    bname = bind ? located : content
     head = node.branches.find_by!(name: bname).head_revision_id
     return BatchResult.new(target: bname, mode: :blind, revisions: [], head: head, old_head: head) if deltas.empty?
 

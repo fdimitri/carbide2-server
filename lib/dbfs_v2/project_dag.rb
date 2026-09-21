@@ -54,7 +54,7 @@ module DbfsV2
     SQL
 
     def advance!(branch, add: [], remove_ids: [], remove_paths: [], rewrite: {},
-                 second_parent: nil, parent: nil, inherit: true, user_id: nil)
+                 second_parent: nil, parent: nil, inherit: true, user_id: nil, seq: nil)
       parent ||= branch.head_node
       builder = Builder.new((inherit && parent) ? parent.root_tree_id : nil)
       by_id = nil
@@ -87,7 +87,7 @@ module DbfsV2
         return parent
       end
       insert!(branch, parent: parent, second_parent: second_parent, kind: ProjectNode::RUNNING,
-              root_tree_id: new_root, user_id: user_id)
+              root_tree_id: new_root, user_id: user_id, seq: seq)
     end
 
     def snapshot!(branch, name: nil, user_id: nil, seq: nil)
@@ -196,7 +196,7 @@ module DbfsV2
           rev = if n.snapshot?
                   e.revision_id
                 elsif revs
-                  (cb && revs[cb.id.to_s]) || e.revision_id
+                  (cb && revs[cb.id.to_s]) || origin_rev_at(cb, seq) || e.revision_id
                 else
                   cb&.head_revision_id || e.revision_id
                 end
@@ -230,7 +230,13 @@ module DbfsV2
 
     def revision_at(content_branch, seq)
       return nil unless content_branch
-      revisions_at([content_branch.id], seq)[content_branch.id.to_s]
+      revisions_at([content_branch.id], seq)[content_branch.id.to_s] || origin_rev_at(content_branch, seq)
+    end
+
+    def origin_rev_at(content_branch, seq)
+      return nil unless content_branch&.origin_revision_id
+      rseq = Revision.where(id: content_branch.origin_revision_id).pick(:seq)
+      rseq.to_i.positive? && rseq.to_i <= seq.to_i ? content_branch.origin_revision_id : nil
     end
 
     # One query: each content line's identity-rev at clock `seq`.
