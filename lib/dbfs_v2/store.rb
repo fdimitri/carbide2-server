@@ -269,12 +269,18 @@ module DbfsV2
       # A branch is born with a seq and its origin (ADR-042): a project state
       # cut before `seq` does not see it; one cut after it, before its first
       # commit, resolves to the origin. `project_branch_id` puts the line in
-      # the SHARE/UPDATE lock set with that project branch's path ops.
-      node.branches.find_or_create_by!(name: name) do |nb|
+      # the SHARE/UPDATE lock set with that project branch's path ops. The
+      # create block only runs for a new row; stamp a leftover detached line
+      # so freeze/path ops on that tree wait for its writes.
+      row = node.branches.find_or_create_by!(name: name) do |nb|
         nb.head_revision_id   = head
         nb.origin_revision_id = head
         nb.project_branch_id  = project_branch_id
       end
+      if project_branch_id && row.project_branch_id.nil?
+        row.update_columns(project_branch_id: project_branch_id)
+      end
+      row
     end
 
     def branches(path, branch: Branch::MAIN)

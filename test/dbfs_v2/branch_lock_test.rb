@@ -49,5 +49,11 @@ class BranchLockTest < Minitest::Test
                     'SHARE is on ProjectBranch, not the per-file line'
     assert_includes model, 'ProjectBranch.live.where(project_id: pid).lock("FOR SHARE")',
                     'a detached per-file line still SHARE-locks the project branches'
+    assert_match(/nb\.project_branch_id\s+=\s+project_branch_id/, src,
+                 'branch_at stamps project_branch_id so the line is in the lock set')
+    assert_includes src, 'row.update_columns(project_branch_id: project_branch_id)',
+                    'a leftover detached line is stamped, not left out of the lock set'
+    refute File.exist?(File.expand_path('../app/models/branch_entry.rb', DBFS_V2_LIB)),
+           'branch_entries is not a live index; the model is gone'
   end
 end

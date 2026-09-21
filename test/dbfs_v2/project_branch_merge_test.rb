@@ -163,4 +163,16 @@ class ProjectBranchMergeTest < Minitest::Test
     end
     assert_match(/delete/, err.message)
   end
+
+  def test_apply_raises_when_a_move_does_not_match
+    tgt = @s.project_branch('main')
+    src = @s.project_branch('feature')
+    ours = @s.state.entries
+    err = assert_raises(RuntimeError) do
+      DbfsV2::ProjectMerge.apply!(@s, tgt, src,
+                                  [{ kind: 'move', node: SecureRandom.uuid, to: '/elsewhere' }],
+                                  ours, [], [], nil)
+    end
+    assert_match(/move/, err.message)
+  end
 end

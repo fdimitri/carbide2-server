@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_20_040000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_21_000000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -108,21 +108,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_20_040000) do
     t.datetime "created_at", null: false
     t.bigint "size", null: false
     t.datetime "updated_at", null: false
-  end
-
-  create_table "branch_entries", force: :cascade do |t|
-    t.uuid "content_branch_id"
-    t.datetime "created_at", null: false
-    t.datetime "deleted_at"
-    t.uuid "file_node_id", null: false
-    t.string "ftype", default: "file", null: false
-    t.string "path", null: false
-    t.uuid "project_branch_id", null: false
-    t.uuid "revision_id"
-    t.datetime "updated_at", null: false
-    t.index ["project_branch_id", "file_node_id"], name: "index_branch_entries_node", unique: true
-    t.index ["project_branch_id", "path"], name: "index_branch_entries_live_path", unique: true, where: "(deleted_at IS NULL)"
-    t.index ["project_branch_id", "path"], name: "index_branch_entries_path"
   end
 
   create_table "branch_heads", force: :cascade do |t|

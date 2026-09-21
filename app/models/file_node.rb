@@ -10,7 +10,6 @@ class FileNode < ApplicationRecord
   has_many :all_branches, class_name: 'Branch', dependent: :destroy
   has_many :revisions, dependent: :destroy
   has_many :file_events, dependent: :destroy
-  has_many :branch_entries, dependent: :delete_all
   has_many :project_tree_entries, dependent: :delete_all
   has_many :keyframes, dependent: :destroy
   belongs_to :parent, class_name: 'FileNode', foreign_key: 'parent_id', optional: true

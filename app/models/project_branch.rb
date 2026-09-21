@@ -15,11 +15,12 @@ class ProjectBranch < ApplicationRecord
   belongs_to :head_node, class_name: 'ProjectNode', optional: true
   belongs_to :fork_node, class_name: 'ProjectNode', optional: true
   belongs_to :base_node, class_name: 'ProjectNode', optional: true
-  has_many :entries, class_name: 'BranchEntry', dependent: :delete_all
   has_many :project_nodes, dependent: :delete_all
   has_many :file_events
   has_many :content_branches, class_name: 'Branch'
 
+  # Live path index: the merkle tree at `head_node`, not a table of rows.
+  # `head_entries` is a flat-path facade over that tree (ProjectDag::Index).
   def head_entries
     head_node ? head_node.entries : DbfsV2::ProjectDag::Index.empty
   end
